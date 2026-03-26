@@ -2,7 +2,7 @@
 
 [![License: GPL v2](https://img.shields.io/badge/License-GPL%20v2-blue.svg)](https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html)
 [![Arch Linux](https://img.shields.io/badge/OS-Arch%20Linux-1793d1.svg)](https://archlinux.org/)
-[![Status](https://img.shields.io/badge/Status-Production%20Ready-success.svg)]()
+[![Status](https://img.shields.io/badge/Status-Production%20NOT%20Ready-success.svg)]()
 
 Dikkat BETA Oldukça fazla açık olabilir. Tested Zen 4.
 
