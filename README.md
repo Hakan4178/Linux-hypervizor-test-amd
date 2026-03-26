@@ -98,3 +98,4 @@ Eğer analizinizi bitirdiyseniz hipervizörü OS'un bellek tablosundan söküp a
 ```bash
 sudo rmmod ring_minus_one
 ```
+Not: Bunu unutmayın 10 dakikadan uzun bırakmayın (Memory leak ve atak yuzeyı yuzunde)
