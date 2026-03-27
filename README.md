@@ -45,7 +45,7 @@ sudo pacman -S linux-headers gcc make python python-pip
 Depoyu klonlayın ve kök dizinde `make` çalıştırın.
 ```bash
 git clone https://github.com/Hakan4178/Barmetal.git
-cd Linux-bare_metal_hypervizor-amd
+cd Barmetal
 make clean && make -j$(nproc)
 ```
 *(Güvenlik denetimi yapılmış derleme ortamında "0 Warning, 0 Error" olarak çıkar).*
