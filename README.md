@@ -6,7 +6,7 @@
 
 Kapatılan açık sayısı:88
 
-Dikkat BETA Oldukça fazla açık olabilir. Hay apoyu s...... sorunu çözedim ama ilerleme var blue pill olmayacagız hybrid bir çözum gelıstırdım kerneli adeta sarhoş edeceğiz ama öldürmeyeceğiz. 
+Dikkat BETA Oldukça fazla açık olabilir. Hay apoyu s...... sorunu çözedim ama ilerleme var blue pill olmayacagız hybrid bir çözum gelıstırdım kerneli adeta sarhoş edeceğiz ama öldürmeyeceğiz. Bilerek güncellemedim kodları.
 
 Barmetal, modern **Endpoint Detection and Response (EDR)**, **Anti-Cheat** ve karmaşık **Custom VM (Packer, Obfuscator)** mimarilerini sıfır gecikme (zero-overhead) ve mutlak görünmezlikle (stealth) analiz etmek için baştan aşağı donanım yetenekleri kullanılarak geliştirilmiş *Ring -1* (Hypervisor) seviyesi bir "Virtual Machine Introspection" (VMI) motorudur.
 
