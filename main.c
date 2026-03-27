@@ -1,12 +1,13 @@
 /*
- * main.c — Module Init/Exit + VMCB Prepare (V4.0 Stealth)
- *
- * Module lifecycle: SVM hardware init, test VMRUN, proc entries.
- * vmcb_prepare_npt: Full VMCB configuration with V4.0 stealth intercepts.
+ * main.c — Module Init/Exit + VMCB Prepare (V6.7 Stealth) 
  */
 
-#include <linux/signal.h>
-
+#include <linux/kallsyms.h>
+#include <linux/kthread.h>
+#include <linux/delay.h>
+#include <linux/sched.h>
+#include <linux/cpumask.h>
+#include <asm/cpufeature.h>
 #include "ring_minus_one.h"
 #include "svm_trace.h"
 
@@ -20,7 +21,56 @@ MODULE_IMPORT_NS("KVM_AMD");
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 static struct svm_context svm_ctx = {0};
-static struct snap_context snap_ctx = {0};
+static struct snap_context snap_ctx;
+
+/* 
+ * Kworker for continuous testing / LBR trace generation.
+ * (V6.7 Paranoid Stealth Mode: NTP disguised)
+ */
+static struct task_struct *guest_thread;
+
+static int guest_kthread(void *data)
+{
+    /* Paranoia 1: Binding ensures the thread never migrates. 
+     * If a VMCB migrates CPUs without a VMCB_CLEAN_ALL flush, 
+     * the new CPU's VMRUN translation cache will corrupt Guest State! */
+    set_cpus_allowed_ptr(current, cpumask_of(0));
+
+    while (!kthread_should_stop()) {
+        /* Paranoia 2: Do not spam dmesg! Anti-cheat/Rootkit detectors
+         * read dmesg rings continuously. Keep execution 100% silent. */
+        
+        /* Disable preemption before modifying per-cpu timing state */
+        preempt_disable();
+        *this_cpu_ptr(&pcpu_tsc_offset) = 0;
+        preempt_enable();
+        
+        /* Spin up the hypervisor and let the Guest payload natively vmexit */
+        int run_ret = svm_run_guest(&svm_ctx);
+        if (run_ret < 0) {
+            pr_err("CRITICAL: svm_run_guest failed with %d. Halting guest execution, awaiting rmmod.\n", run_ret);
+            /* 
+             * Do NOT break/exit here. If the thread terminates voluntarily, 
+             * the task_struct is freed and rmmod's kthread_stop() will trigger a Null Pointer Dereference (Panic).
+             * Instead, sleep dormantly until rmmod signals us to stop.
+             */
+            while (!kthread_should_stop()) {
+                set_current_state(TASK_INTERRUPTIBLE);
+                schedule_timeout(msecs_to_jiffies(1000));
+            }
+            break;
+        }
+        
+        /* 
+         * Paranoia 3: Using interruptible schedule timeout instead of msleep.
+         * If the user `rmmod`s the driver, `kthread_stop` immediately breaks
+         * this sleep and returns instantly, preventing a 2-second Module Unload hang.
+         */
+        set_current_state(TASK_INTERRUPTIBLE);
+        schedule_timeout(msecs_to_jiffies(1500));
+    }
+    return 0;
+}
 
 struct svm_context *g_svm = &svm_ctx;
 struct snap_context *g_snap = &snap_ctx;
@@ -82,13 +132,20 @@ int vmcb_prepare_npt(struct svm_context *ctx, u64 g_rip, u64 g_rsp, u64 g_cr3)
     /* CPUID — uniform latency, prevent timing fingerprint */
     vmcb->control.intercepts[INTERCEPT_CPUID >> 5] |=
         (1U << (INTERCEPT_CPUID & 31));
+        
+    /* MSR and IO interception (mandatory for MSRPM/IOPM usage) */
+    vmcb->control.intercepts[INTERCEPT_MSR_PROT >> 5] |=
+        (1U << (INTERCEPT_MSR_PROT & 31));
+    vmcb->control.intercepts[INTERCEPT_IOIO_PROT >> 5] |=
+        (1U << (INTERCEPT_IOIO_PROT & 31));
+
     /* RDTSCP */
 #ifdef INTERCEPT_RDTSCP
     vmcb->control.intercepts[INTERCEPT_RDTSCP >> 5] |=
         (1U << (INTERCEPT_RDTSCP & 31));
 #endif
 
-    /* ── MSRPM V4.0: Full timing + syscall MSR coverage ── */
+        /* ── MSRPM V4.0: Full timing + syscall MSR coverage ── */
     if (ctx->msrpm_va) {
         u8 *msrpm = (u8 *)ctx->msrpm_va;
 
@@ -100,18 +157,20 @@ int vmcb_prepare_npt(struct svm_context *ctx, u64 g_rip, u64 g_rsp, u64 g_cr3)
         msrpm[(0xE8 * 2) / 8] |= (1 << ((0xE8 * 2) % 8));
         /* MSR 0x176 (IA32_SYSENTER_EIP): rdmsr */
         msrpm[(0x176 * 2) / 8] |= (1 << ((0x176 * 2) % 8));
+
+        /* AMD Zen 4 MSRPM Change: First block is now 32KB (0x8000), not 2KB (0x800) */
         /* MSR 0xC0000081 (STAR): rdmsr + wrmsr */
-        msrpm[0x800 + (0x81 * 2) / 8] |= (3 << ((0x81 * 2) % 8));
+        msrpm[0x8000 + (0x81 * 2) / 8] |= (3 << ((0x81 * 2) % 8));
         /* MSR 0xC0000082 (LSTAR): rdmsr + wrmsr */
-        msrpm[0x800 + (0x82 * 2) / 8] |= (3 << ((0x82 * 2) % 8));
+        msrpm[0x8000 + (0x82 * 2) / 8] |= (3 << ((0x82 * 2) % 8));
         /* MSR 0xC0000103 (TSC_AUX): rdmsr */
-        msrpm[0x800 + (0x103 * 2) / 8] |= (1 << ((0x103 * 2) % 8));
+        msrpm[0x8000 + (0x103 * 2) / 8] |= (1 << ((0x103 * 2) % 8));
 
         /* MSR 0xC0010015 (K8_HWCR): rdmsr — SVME_LOCK spoofing */
-        msrpm[0x1000 + (0x15 * 2) / 8] |= (1 << ((0x15 * 2) % 8));
+        msrpm[0x8800 + (0x15 * 2) / 8] |= (1 << ((0x15 * 2) % 8));
 
         /* MSR 0xC0010114 (SVM_LOCK_KEY): rdmsr — SVM presence hiding */
-        msrpm[0x1000 + (0x114 * 2) / 8] |= (1 << ((0x114 * 2) % 8));
+        msrpm[0x8800 + (0x114 * 2) / 8] |= (1 << ((0x114 * 2) % 8));
 
         /* ── PMC MSRs: intercept to freeze counters ── */
         /* MSR 0x38D (IA32_PERF_FIXED_CTR_CTRL): rdmsr+wrmsr */
@@ -158,11 +217,14 @@ int vmcb_prepare_npt(struct svm_context *ctx, u64 g_rip, u64 g_rsp, u64 g_cr3)
     vmcb->control.clean = 0;
 
     /* NPT configuration */
-    if (npt && npt->pml4_pa) {
+    if (npt && npt->pml4_pa && pfn_valid(npt->pml4_pa >> PAGE_SHIFT)) {
         vmcb->control.nested_ctl = 1;
         vmcb->control.nested_cr3 = npt->pml4_pa;
         pr_info("[VMCB] NPT enabled, nested_cr3=0x%llx\n",
                 (u64)npt->pml4_pa);
+    } else {
+        pr_err("[VMCB] CRITICAL: Invalid NPT PML4 %llx. Disabling NPT.\n", npt ? (u64)npt->pml4_pa : 0);
+        vmcb->control.nested_ctl = 0;
     }
 
     /* TSC offset — per-CPU */
@@ -206,12 +268,26 @@ int vmcb_prepare_npt(struct svm_context *ctx, u64 g_rip, u64 g_rsp, u64 g_cr3)
 
     vmcb->save.tr.selector = tr;
     vmcb->save.tr.limit    = 0xFFFF;
-    vmcb->save.tr.base     = 0;
     vmcb->save.tr.attrib   = 0x008B;
+
+    /* Güvenlik (Zero-Day Mod): Host TR base'inin GDT üzerinden tam okunması */
+    {
+        u8 *gdt = (u8 *)gdtr.address;
+        u16 idx = tr & ~7;
+        u64 tr_base = 0;
+        if (gdt) {
+            /* FIX: Prevent 32-bit sign extension by casting to u64 before shift */
+            tr_base = ((u64)gdt[idx + 2]) | ((u64)gdt[idx + 3] << 8) | 
+                      ((u64)gdt[idx + 4] << 16) | ((u64)gdt[idx + 7] << 24);
+            /* 64-bit modunda TSS 16-byte'tır. Üst 32-biti de oku. */
+            tr_base |= ((u64)(*(u32 *)(&gdt[idx + 8])) << 32);
+        }
+        vmcb->save.tr.base = tr_base;
+    }
 
     /* Control registers */
     vmcb->save.cr0  = cr0;
-    vmcb->save.cr3  = g_cr3 ? g_cr3 : (cr3 & 0xFFFFFFFFFFFFF000ULL);
+    vmcb->save.cr3  = (g_cr3 && pfn_valid(g_cr3 >> PAGE_SHIFT)) ? g_cr3 : (cr3 & 0xFFFFFFFFFFFFF000ULL);
     vmcb->save.cr4  = cr4;
     vmcb->save.efer = efer_val;
 
@@ -241,6 +317,15 @@ static int __init svm_module_init(void)
     u64 fs_base, gs_base;
     u64 guest_rsp;
     int ret;
+
+    /* 
+     * CRITICAL FIX for Bare-Metal Ryzen Triple Faults:
+     * We MUST bind the setup process to CPU 0. 
+     * Otherwise, MSR_VM_HSAVE_PA and the Host State (GDTR, TR, CR3)
+     * are collected from a random CPU, and when the guest_kthread 
+     * forces execution onto CPU 0, VMRUN Triple Faults immediately.
+     */
+    set_cpus_allowed_ptr(current, cpumask_of(0));
 
     pr_info("=== SVM Modülü Başlatılıyor ===\n");
 
@@ -291,8 +376,8 @@ static int __init svm_module_init(void)
     }
     svm_ctx.vmcb_pa = virt_to_phys(svm_ctx.vmcb);
 
-    /* 6) MSRPM - 8KB */
-    svm_ctx.msrpm_va = (void *)__get_free_pages(GFP_KERNEL | __GFP_ZERO, 1);
+    /* 6) MSRPM - 64KB (Zen 4 requires 40KB) */
+    svm_ctx.msrpm_va = (void *)__get_free_pages(GFP_KERNEL | __GFP_ZERO, 4);
     if (!svm_ctx.msrpm_va) {
         ret = -ENOMEM;
         goto err_vmcb;
@@ -319,7 +404,16 @@ static int __init svm_module_init(void)
     if (ret)
         goto err_guest;
 
-    memcpy(svm_ctx.code_page, guest_code_bin, 3);
+    /*
+     * V6.6 Stealth: Kthread Guest Payload.
+     * Sürekli LBR Dallanması (Branching) üreten küçük bir döngü payload'u.
+     * CPUID (0x0F, 0xA2) + JMP -2 (0xEB, 0xFC)
+     * Bu sayede "live" dashboard üzerinde VMEXIT döngülerini ve izleri görürüz.
+     */
+    *((u8 *)svm_ctx.code_page + 0) = 0x0f; /* cpuid */
+    *((u8 *)svm_ctx.code_page + 1) = 0xa2;
+    *((u8 *)svm_ctx.code_page + 2) = 0xeb; /* jmp -4 */
+    *((u8 *)svm_ctx.code_page + 3) = 0xfc;
     guest_rsp = (u64)svm_ctx.stack_page + PAGE_SIZE - 16;
 
     /* 9) Host state */
@@ -340,56 +434,86 @@ static int __init svm_module_init(void)
     rdmsrl(MSR_FS_BASE, fs_base);
     rdmsrl(MSR_GS_BASE, gs_base);
 
+    /* Güvenlik: pcpu_tsc_offset değişkeninin Initialize edilmesi. 
+     * İlk kurulumda çöp değer veya eski thread gürültüsü kalmaması için.*/
+    *this_cpu_ptr(&pcpu_tsc_offset) = 0;
+
     /* ── VMCB Init — Use context-based prepare ── */
     vmcb_prepare_npt(&svm_ctx, (u64)svm_ctx.code_page, guest_rsp, cr3 & 0xFFFFFFFFFFFFF000ULL);
 
 
-    pr_info("=== Konuk başlatılıyor (VMEXIT dispatch loop) ===\n");
-
-    /* ── VMRUN Dispatch Loop — handles CPUID/MSR/IOIO/HLT ── */
-    ret = svm_run_guest(&svm_ctx);
-
-    raw_cr3_flush();
-
-    if (ret) {
-        pr_err(">>> Guest döngüsü hata ile çıktı: %d <<<\n", ret);
-        goto err_guest;
-    }
-
-    pr_info(">>> BAŞARILI! Guest normal çıkış yaptı <<<\n");
-
-    /* ── Proc entries ── */
+    /* ── Proc entries & Trace Init (MUST BE BEFORE VMRUN) ── */
     ret = procfs_init(&snap_ctx);
     if (ret)
-        goto err_guest;
+        goto err_npt;
 
     ret = svm_trace_init();
     if (ret) {
         procfs_exit(&snap_ctx);
-        goto err_guest;
+        goto err_npt;
     }
+
+    ret = svm_chardev_init();
+    if (ret) {
+        svm_trace_cleanup();
+        procfs_exit(&snap_ctx);
+        goto err_npt;
+    }
+
+    pr_info("=== Sürekli Stealth KThread Başlatılıyor (kworker/u4:ntp) ===\n");
+
+    /* 
+     * Modül insmod komutunu kilitlememek ve arka planda ring buffer'ı beslemek için
+     * Ring -1 döngüsünü sahte bir kworker thread'inin içine hapsediyoruz.
+     */
+    guest_thread = kthread_run(guest_kthread, NULL, "kworker/u4:ntp");
+    if (IS_ERR(guest_thread)) {
+        pr_err("kthread baslatilamadi.\n");
+        ret = PTR_ERR(guest_thread);
+        goto err_guest_running;
+    }
+
+    pr_info(">>> BAŞARILI! Modül arka planda sessizce izleme yapıyor <<<\n");
 
     return 0;
 
+err_guest_running:
+    svm_chardev_exit();
+    svm_trace_cleanup();
+    procfs_exit(&snap_ctx);
+
 err_guest:
     if (svm_ctx.code_page) {
-        if (my_set_memory_nx)
-            my_set_memory_nx((unsigned long)svm_ctx.code_page, 1);
+        if (my_set_memory_nx) {
+            if (my_set_memory_nx((unsigned long)svm_ctx.code_page, 1))
+                pr_warn("Failed to set_memory_nx on code_page during error cleanup\n");
+        }
         free_page((unsigned long)svm_ctx.code_page);
+        svm_ctx.code_page = NULL;
     }
-    if (svm_ctx.stack_page)
+    if (svm_ctx.stack_page) {
         free_page((unsigned long)svm_ctx.stack_page);
-    if (svm_ctx.iopm_va)
+        svm_ctx.stack_page = NULL;
+    }
+    if (svm_ctx.iopm_va) {
         free_pages((unsigned long)svm_ctx.iopm_va, 2);
+        svm_ctx.iopm_va = NULL;
+    }
 err_msrpm:
-    if (svm_ctx.msrpm_va)
-        free_pages((unsigned long)svm_ctx.msrpm_va, 1);
+    if (svm_ctx.msrpm_va) {
+        free_pages((unsigned long)svm_ctx.msrpm_va, 4);
+        svm_ctx.msrpm_va = NULL;
+    }
 err_vmcb:
-    if (svm_ctx.vmcb)
+    if (svm_ctx.vmcb) {
         free_page((unsigned long)svm_ctx.vmcb);
+        svm_ctx.vmcb = NULL;
+    }
 err_hsave:
-    if (svm_ctx.hsave_va)
+    if (svm_ctx.hsave_va) {
         free_page((unsigned long)svm_ctx.hsave_va);
+        svm_ctx.hsave_va = NULL;
+    }
 err_npt:
     npt_destroy(&svm_ctx.npt);
     return ret;
@@ -403,6 +527,19 @@ static void __exit svm_module_exit(void)
 {
     u64 efer_val;
 
+    /* 
+     * Clean-up MUST run on CPU 0 to wipe the correct MSR_VM_HSAVE_PA.
+     * If rmmod runs on CPU 2, CPU 0's MSR is left permanently poisoned.
+     */
+    set_cpus_allowed_ptr(current, cpumask_of(0));
+
+    if (guest_thread) {
+        kthread_stop(guest_thread);
+        guest_thread = NULL;
+        pr_info("Kthread başarıyla durduruldu.\n");
+    }
+
+    svm_chardev_exit();
     svm_trace_cleanup();
 
     /* Procfs + watcher cleanup */
@@ -415,20 +552,33 @@ static void __exit svm_module_exit(void)
     wrmsrl(MSR_EFER, efer_val);
 
     if (svm_ctx.code_page) {
-        if (my_set_memory_nx)
-            my_set_memory_nx((unsigned long)svm_ctx.code_page, 1);
+        if (my_set_memory_nx) {
+            if (my_set_memory_nx((unsigned long)svm_ctx.code_page, 1))
+                pr_warn("Failed to set_memory_nx on code_page during module exit\n");
+        }
         free_page((unsigned long)svm_ctx.code_page);
+        svm_ctx.code_page = NULL;
     }
-    if (svm_ctx.stack_page)
+    if (svm_ctx.stack_page) {
         free_page((unsigned long)svm_ctx.stack_page);
-    if (svm_ctx.iopm_va)
+        svm_ctx.stack_page = NULL;
+    }
+    if (svm_ctx.iopm_va) {
         free_pages((unsigned long)svm_ctx.iopm_va, 2);
-    if (svm_ctx.msrpm_va)
-        free_pages((unsigned long)svm_ctx.msrpm_va, 1);
-    if (svm_ctx.vmcb)
+        svm_ctx.iopm_va = NULL;
+    }
+    if (svm_ctx.msrpm_va) {
+        free_pages((unsigned long)svm_ctx.msrpm_va, 4);
+        svm_ctx.msrpm_va = NULL;
+    }
+    if (svm_ctx.vmcb) {
         free_page((unsigned long)svm_ctx.vmcb);
-    if (svm_ctx.hsave_va)
+        svm_ctx.vmcb = NULL;
+    }
+    if (svm_ctx.hsave_va) {
         free_page((unsigned long)svm_ctx.hsave_va);
+        svm_ctx.hsave_va = NULL;
+    }
 
     pr_info("SVM modülü temizlendi.\n");
 }
