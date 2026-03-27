@@ -1,5 +1,7 @@
 # Build artıkları
 *.o
+*.bak
+*.i64
 *.o.cmd
 *.ko
 *.cmd
