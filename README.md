@@ -4,9 +4,9 @@
 [![Arch Linux](https://img.shields.io/badge/OS-Arch%20Linux-1793d1.svg)](https://archlinux.org/)
 [![Status](https://img.shields.io/badge/Status-Production%20NOT%20Ready-success.svg)]()
 
-Kapatılan açık sayısı:91
+Kapatılan açık sayısı:95
 
-Dikkat BETA Oldukça fazla açık olabilir. Hay apoyu s...... sorunu çözedim ama ilerleme var blue pill olmayacagız hybrid bir çözum gelıstırdım kerneli adeta sarhoş edeceğiz ama öldürmeyeceğiz. Bilerek güncellemedim kodları.
+Dikkat BETA Oldukça fazla açık olabilir. Hay apoyu s...... sorunu çözedim ama ilerleme var blue pill olmayacagız hybrid bir çözum gelıstırdım kerneli adeta sarhoş edeceğiz ama öldürmeyeceğiz. Bilerek güncellemedim kodları. İsimler ve log kayıtları ntp_sync gibi masum isimler ile değişti uç noktalar güçlendiridi.
 
 Barmetal, modern **Endpoint Detection and Response (EDR)**, **Anti-Cheat** ve karmaşık **Custom VM (Packer, Obfuscator)** mimarilerini sıfır gecikme (zero-overhead) ve mutlak görünmezlikle (stealth) analiz etmek için baştan aşağı donanım yetenekleri kullanılarak geliştirilmiş *Ring -1* (Hypervisor) seviyesi bir "Virtual Machine Introspection" (VMI) motorudur.
 
