@@ -4,7 +4,7 @@
 [![Arch Linux](https://img.shields.io/badge/OS-Arch%20Linux-1793d1.svg)](https://archlinux.org/)
 [![Status](https://img.shields.io/badge/Status-Production%20NOT%20Ready-success.svg)]()
 
-Kapatılan açık sayısı:88
+Kapatılan açık sayısı:91
 
 Dikkat BETA Oldukça fazla açık olabilir. Hay apoyu s...... sorunu çözedim ama ilerleme var blue pill olmayacagız hybrid bir çözum gelıstırdım kerneli adeta sarhoş edeceğiz ama öldürmeyeceğiz. Bilerek güncellemedim kodları.
 
