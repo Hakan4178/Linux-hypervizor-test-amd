@@ -481,8 +481,31 @@ skip_rearm:
     }
 
     case SVM_EXIT_EXCP_BASE + 14: {  /* #PF (Page Fault) */
-        pr_info("[MATRIX_ESCAPE] Guest #PF at RIP=0x%llx CR2=0x%llx. Ejecting.\n",
-                ctx->vmcb->save.rip, ctx->vmcb->control.exit_info_2);
+        u64 fault_va = ctx->vmcb->control.exit_info_2;
+        u64 error_code = ctx->vmcb->control.exit_info_1;
+        u8 dummy;
+        
+        /* 
+         * Ghost Target Demand Paging / CoW Proxy
+         * Linux uses lazy demand paging. The first time a process touches its own
+         * mapped ELF or Library pages, it triggers a #PF. If we eject here, we
+         * lose the Matrix. We can force the Host Kernel to fault-in the page 
+         * safely by simulating a read (or write) to the faulting user virtual address.
+         */
+        if (copy_from_user(&dummy, (void __user *)fault_va, 1) == 0) {
+            if (error_code & 2) { /* The #PF was caused by a Write Access, force CoW */
+                if (copy_to_user((void __user *)fault_va, &dummy, 1)) {
+                    pr_err("[MATRIX_ESCAPE] CoW Yazma Hatasi at 0x%llx. Ejecting.\n", fault_va);
+                    return 1;
+                }
+            }
+            /* Page is now physically backed by Host Kernel. Re-enter VMRUN! */
+            return 0; 
+        }
+        
+        /* Real Segmentation Fault / Invalid Memory Access */
+        pr_err("[MATRIX_ESCAPE] Fatal #PF at RIP=0x%llx CR2=0x%llx (err=%llx). Ejecting.\n",
+                ctx->vmcb->save.rip, fault_va, error_code);
         return 1; /* Graceful exit */
     }
 
