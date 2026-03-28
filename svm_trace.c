@@ -26,12 +26,6 @@
  */
 
 #include "svm_trace.h"
-<<<<<<< HEAD
-
-/* ── Module-level ring instance ────────────────────────────────────────── */
-struct svm_trace_ring svm_tring;
-EXPORT_SYMBOL_GPL(svm_tring);
-=======
 #include <linux/uaccess.h>
 #include <linux/mutex.h>
 
@@ -40,7 +34,6 @@ struct svm_trace_ring svm_tring;
 
 static DEFINE_MUTEX(trace_read_mutex);
 static DEFINE_RAW_SPINLOCK(trace_write_lock);
->>>>>>> 4f7675a (V6.7 Yarı çözüm)
 
 /*
  * Wait queue: /proc reader blocks here when the ring is empty.
@@ -61,13 +54,6 @@ static struct proc_dir_entry *proc_trace_entry;
  */
 static u64 ring_reserve(struct svm_trace_ring *r, u32 len)
 {
-<<<<<<< HEAD
-	u64 tail = (u64)atomic64_add_return(len, &r->write_idx) - len;
-	/* Overflow: advance read pointer so the consumer always sees fresh data */
-	if (tail - (u64)atomic64_read(&r->read_idx) + len > r->size) {
-		atomic64_add(len, &r->read_idx);
-		atomic64_inc(&r->drop_count);
-=======
 	u64 write_idx = (u64)atomic64_add_return(len, &r->write_idx);
 	u64 tail = write_idx - len;
 	u64 read_idx, old_read_idx;
@@ -85,7 +71,6 @@ static u64 ring_reserve(struct svm_trace_ring *r, u32 len)
 			atomic64_add(drop, &r->drop_count);
 			break;
 		}
->>>>>>> 4f7675a (V6.7 Yarı çözüm)
 	}
 	return tail % r->size;
 }
@@ -105,8 +90,6 @@ static void ring_write(struct svm_trace_ring *r, u64 offset,
 		memcpy(r->buffer, (const u8 *)src + first, len - first);
 }
 
-<<<<<<< HEAD
-=======
 /*
  * ring_write_nofault - Copy from potentially-faulting kernel address.
  * On failure, zero-fills the destination to prevent stale data leaks.
@@ -132,7 +115,6 @@ static int ring_write_nofault(struct svm_trace_ring *r, u64 offset,
 	return ret;
 }
 
->>>>>>> 4f7675a (V6.7 Yarı çözüm)
 /* ── LBR drain ──────────────────────────────────────────────────────────── */
 
 /*
@@ -147,14 +129,6 @@ void svm_trace_emit_lbr(u64 cr3, u64 rip)
 {
 	struct svm_trace_entry hdr;
 	struct svm_lbr_pair    lbr[AMD_LBR_STACK_DEPTH];
-<<<<<<< HEAD
-	u32  i;
-	u64  offset;
-
-	for (i = 0; i < AMD_LBR_STACK_DEPTH; i++) {
-		rdmsrl(MSR_AMD_LBR_FROM_BASE + i, lbr[i].from);
-		rdmsrl(MSR_AMD_LBR_TO_BASE   + i, lbr[i].to);
-=======
 	unsigned long flags;
 	u32  i, valid_count = 0;
 	u64  offset;
@@ -177,36 +151,16 @@ void svm_trace_emit_lbr(u64 cr3, u64 rip)
 		if (rdmsrq_safe(MSR_AMD_LBR_TO_BASE   + i, &lbr[i].to))
 			break;
 		valid_count++;
->>>>>>> 4f7675a (V6.7 Yarı çözüm)
 	}
 
 	hdr.magic      = SVM_TRACE_MAGIC;
 	hdr.tsc        = rdtsc_ordered();
 	hdr.event_type = TRACE_EVT_LBR_SAMPLE;
-<<<<<<< HEAD
-	hdr.lbr_count  = AMD_LBR_STACK_DEPTH;
-=======
 	hdr.lbr_count  = valid_count;
->>>>>>> 4f7675a (V6.7 Yarı çözüm)
 	hdr.guest_cr3  = cr3;
 	hdr.guest_rip  = rip;
 	hdr.fault_gpa  = 0;
 	hdr.data_size  = 0;
-<<<<<<< HEAD
-	hdr._pad       = 0;
-	memcpy(hdr.lbr, lbr, sizeof(lbr));
-
-	/* Producer critical section: reserve → write payload → commit barrier */
-	offset = ring_reserve(&svm_tring, sizeof(hdr));
-	smp_wmb();                          /* ensure header visible before data */
-	ring_write(&svm_tring, offset, &hdr, sizeof(hdr));
-	smp_wmb();                          /* commit: data visible to consumer  */
-	atomic64_add(sizeof(hdr), &svm_tring.commit_idx);
-
-	wake_up_interruptible(&svm_trace_wq);
-}
-EXPORT_SYMBOL_GPL(svm_trace_emit_lbr);
-=======
 	memcpy(hdr.lbr, lbr, sizeof(lbr));
 
 	/* Bulgu #4: spinlock zaten tam bariyer sağlar, smp_wmb gereksiz kaldırıldı */
@@ -218,7 +172,6 @@ EXPORT_SYMBOL_GPL(svm_trace_emit_lbr);
 
 	wake_up_interruptible(&svm_trace_wq);
 }
->>>>>>> 4f7675a (V6.7 Yarı çözüm)
 
 /* ── NPF dirty-page capture ─────────────────────────────────────────────── */
 
@@ -230,11 +183,6 @@ EXPORT_SYMBOL_GPL(svm_trace_emit_lbr);
 void svm_trace_emit_dirty(u64 cr3, u64 rip, u64 fault_gpa, const void *hva)
 {
 	struct svm_trace_entry hdr;
-<<<<<<< HEAD
-	u32  total = sizeof(hdr) + PAGE_SIZE;
-	u64  offset;
-
-=======
 	unsigned long flags;
 	u32  total = sizeof(hdr) + PAGE_SIZE;
 	u64  offset, data_offset;
@@ -245,7 +193,6 @@ void svm_trace_emit_dirty(u64 cr3, u64 rip, u64 fault_gpa, const void *hva)
 		return;
 
 	memset(&hdr, 0, sizeof(hdr));
->>>>>>> 4f7675a (V6.7 Yarı çözüm)
 	hdr.magic      = SVM_TRACE_MAGIC;
 	hdr.tsc        = rdtsc_ordered();
 	hdr.event_type = TRACE_EVT_NPF_DIRTY;
@@ -254,22 +201,6 @@ void svm_trace_emit_dirty(u64 cr3, u64 rip, u64 fault_gpa, const void *hva)
 	hdr.guest_rip  = rip;
 	hdr.fault_gpa  = fault_gpa;
 	hdr.data_size  = PAGE_SIZE;
-<<<<<<< HEAD
-	hdr._pad       = 0;
-	memset(hdr.lbr, 0, sizeof(hdr.lbr));
-
-	offset = ring_reserve(&svm_tring, total);
-	smp_wmb();
-	ring_write(&svm_tring, offset, &hdr, sizeof(hdr));
-	ring_write(&svm_tring, (offset + sizeof(hdr)) % svm_tring.size,
-		   hva, PAGE_SIZE);
-	smp_wmb();
-	atomic64_add(total, &svm_tring.commit_idx);
-
-	wake_up_interruptible(&svm_trace_wq);
-}
-EXPORT_SYMBOL_GPL(svm_trace_emit_dirty);
-=======
 
 	raw_spin_lock_irqsave(&trace_write_lock, flags);
 	offset = ring_reserve(&svm_tring, total);
@@ -289,7 +220,6 @@ EXPORT_SYMBOL_GPL(svm_trace_emit_dirty);
 
 	wake_up_interruptible(&svm_trace_wq);
 }
->>>>>>> 4f7675a (V6.7 Yarı çözüm)
 
 /* ── /proc/svm_trace consumer ───────────────────────────────────────────── */
 
@@ -306,28 +236,17 @@ static ssize_t trace_read(struct file *file, char __user *buf,
 	u64   committed, consumed, avail;
 	u64   offset;
 	u32   copy_len;
-<<<<<<< HEAD
-=======
 	ssize_t ret = 0;
->>>>>>> 4f7675a (V6.7 Yarı çözüm)
 
 	if (!svm_tring.buffer)
 		return -ENOMEM;
 
-<<<<<<< HEAD
-=======
 	mutex_lock(&trace_read_mutex);
->>>>>>> 4f7675a (V6.7 Yarı çözüm)
 retry:
 	smp_rmb();                          /* see all committed writes          */
 	committed = (u64)atomic64_read(&svm_tring.commit_idx);
 	consumed  = (u64)atomic64_read(&svm_tring.read_idx);
 
-<<<<<<< HEAD
-	if (committed <= consumed) {
-		if (file->f_flags & O_NONBLOCK)
-			return -EAGAIN;
-=======
 	if (committed < consumed) {
 		ret = -EIO;
 		goto out;
@@ -341,16 +260,12 @@ retry:
 		
 		/* Release mutex before sleeping to prevent deadlocks */
 		mutex_unlock(&trace_read_mutex);
->>>>>>> 4f7675a (V6.7 Yarı çözüm)
 		if (wait_event_interruptible(svm_trace_wq,
 		    (u64)atomic64_read(&svm_tring.commit_idx) >
 		    (u64)atomic64_read(&svm_tring.read_idx)))
 			return -ERESTARTSYS;
-<<<<<<< HEAD
-=======
 		
 		mutex_lock(&trace_read_mutex);
->>>>>>> 4f7675a (V6.7 Yarı çözüm)
 		goto retry;
 	}
 
@@ -359,17 +274,6 @@ retry:
 
 	/* Handle ring wrap: only copy up to end of buffer in one shot */
 	offset   = consumed % svm_tring.size;
-<<<<<<< HEAD
-	if (offset + copy_len > svm_tring.size)
-		copy_len = (u32)(svm_tring.size - offset);
-
-	smp_rmb();
-	if (copy_to_user(buf, svm_tring.buffer + offset, copy_len))
-		return -EFAULT;
-
-	atomic64_add(copy_len, &svm_tring.read_idx);
-	return copy_len;
-=======
 	if (copy_len > svm_tring.size - offset)
 		copy_len = (u32)(svm_tring.size - offset);
 
@@ -384,7 +288,6 @@ retry:
 out:
 	mutex_unlock(&trace_read_mutex);
 	return ret;
->>>>>>> 4f7675a (V6.7 Yarı çözüm)
 }
 
 static const struct proc_ops pops_trace = {
@@ -396,15 +299,9 @@ static const struct proc_ops pops_trace = {
 int svm_trace_init(void)
 {
 	svm_tring.size = SVM_TRACE_BUF_SIZE;
-<<<<<<< HEAD
-	svm_tring.buffer = vmalloc(svm_tring.size);
-	if (!svm_tring.buffer) {
-		pr_err("[SVM_TRACE] vmalloc(%lu) failed\n", svm_tring.size);
-=======
 	svm_tring.buffer = vzalloc(svm_tring.size);
 	if (!svm_tring.buffer) {
 		pr_err("[SVM_TRACE] vzalloc(%lu) failed\n", svm_tring.size);
->>>>>>> 4f7675a (V6.7 Yarı çözüm)
 		return -ENOMEM;
 	}
 

@@ -6,10 +6,7 @@
  */
 
 #include "ring_minus_one.h"
-<<<<<<< HEAD
-=======
 #include <linux/mutex.h>
->>>>>>> 4f7675a (V6.7 Yarı çözüm)
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  Global Değişken Tanımları (Yardımcı Fonksiyonlar için)
@@ -17,16 +14,7 @@
 
 set_memory_x_t  my_set_memory_x = NULL;
 set_memory_nx_t my_set_memory_nx = NULL;
-<<<<<<< HEAD
-
-/* Guest kodu: HLT + sonsuz döngü */
-const u8 guest_code_bin[] = {
-    0xf4,        /* hlt */
-    0xeb, 0xfc   /* jmp -2 */
-};
-=======
 static DEFINE_MUTEX(kprobe_mutex);
->>>>>>> 4f7675a (V6.7 Yarı çözüm)
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  SVM Donanım Kontrolleri
@@ -50,12 +38,6 @@ int resolve_hidden_symbols(void)
 {
     struct kprobe kp_x  = { .symbol_name = "set_memory_x" };
     struct kprobe kp_nx = { .symbol_name = "set_memory_nx" };
-<<<<<<< HEAD
-
-    if (register_kprobe(&kp_x) < 0) {
-        pr_err("set_memory_x adresi bulunamadı!\n");
-        return -EFAULT;
-=======
     int ret = 0;
 
     mutex_lock(&kprobe_mutex);
@@ -64,33 +46,24 @@ int resolve_hidden_symbols(void)
         pr_err("set_memory_x adresi bulunamadı!\n");
         ret = -EFAULT;
         goto out;
->>>>>>> 4f7675a (V6.7 Yarı çözüm)
     }
     my_set_memory_x = (set_memory_x_t)kp_x.addr;
     unregister_kprobe(&kp_x);
 
     if (register_kprobe(&kp_nx) < 0) {
         pr_err("set_memory_nx adresi bulunamadı!\n");
-<<<<<<< HEAD
-        return -EFAULT;
-=======
         ret = -EFAULT;
         goto out;
->>>>>>> 4f7675a (V6.7 Yarı çözüm)
     }
     my_set_memory_nx = (set_memory_nx_t)kp_nx.addr;
     unregister_kprobe(&kp_nx);
 
     pr_info("Semboller çözümlendi: set_memory_x=%pK, set_memory_nx=%pK\n",
             my_set_memory_x, my_set_memory_nx);
-<<<<<<< HEAD
-    return 0;
-=======
 
 out:
     mutex_unlock(&kprobe_mutex);
     return ret;
->>>>>>> 4f7675a (V6.7 Yarı çözüm)
 }
 
 /*
@@ -157,14 +130,11 @@ void vmrun_safe(u64 vmcb_pa)
  */
 void vmrun_with_regs(u64 vmcb_pa, struct guest_regs *regs)
 {
-<<<<<<< HEAD
-=======
     if (unlikely(!regs)) {
         pr_err("[SVM] vmrun_with_regs NULL regs pointer koruması tetiklendi!\n");
         return;
     }
 
->>>>>>> 4f7675a (V6.7 Yarı çözüm)
     asm volatile (
         /* === Save host callee-saved registers === */
         "push %%rbx   \n\t"
@@ -243,10 +213,6 @@ void raw_cr3_flush(void)
 {
     unsigned long cr3;
 
-<<<<<<< HEAD
-    asm volatile("mov %%cr3, %0" : "=r"(cr3));
-    asm volatile("mov %0, %%cr3" : : "r"(cr3) : "memory");
-=======
     /* lfence bariyerleri eklenerek Meltdown/Spectre TLB Side-Channel engellendi */
     asm volatile(
         "lfence \n\t"
@@ -255,5 +221,4 @@ void raw_cr3_flush(void)
         "lfence \n\t"
         : "=r"(cr3)
         :: "memory");
->>>>>>> 4f7675a (V6.7 Yarı çözüm)
 }

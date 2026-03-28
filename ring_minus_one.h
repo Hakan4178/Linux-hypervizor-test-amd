@@ -32,10 +32,7 @@
 #include <linux/seq_file.h>
 #include <linux/io.h>
 #include <linux/gfp.h>
-<<<<<<< HEAD
-=======
 #include <linux/nmi.h>
->>>>>>> 4f7675a (V6.7 Yarı çözüm)
 #include <asm/msr.h>
 #include <asm/processor.h>
 #include <asm/special_insns.h>
@@ -44,11 +41,8 @@
 #include <asm/io.h>
 #include <asm/pgtable.h>
 #include <asm/page.h>
-<<<<<<< HEAD
-=======
 #include <asm/desc.h>
 #include <asm/fpu/api.h>
->>>>>>> 4f7675a (V6.7 Yarı çözüm)
 
 #include "svm_dump.h"
 
@@ -188,11 +182,6 @@ typedef int (*set_memory_nx_t)(unsigned long addr, int numpages);
 extern set_memory_x_t  my_set_memory_x;
 extern set_memory_nx_t my_set_memory_nx;
 
-<<<<<<< HEAD
-extern const u8 guest_code_bin[];
-
-=======
->>>>>>> 4f7675a (V6.7 Yarı çözüm)
 /* Per-CPU TSC */
 DECLARE_PER_CPU(s64, pcpu_tsc_offset);
 
@@ -236,10 +225,8 @@ void procfs_exit(struct snap_context *snap);
 int  vmcb_prepare_npt(struct svm_context *ctx, u64 g_rip, u64 g_rsp, u64 g_cr3);
 
 /* vmexit.c — VMEXIT dispatch loop */
-int  svm_run_guest(struct svm_context *ctx);
+int  svm_run_guest(struct svm_context *ctx, struct guest_regs *regs);
 
-<<<<<<< HEAD
-=======
 /* svm_chardev.c — Matrix IOCTL Entry Portal */
 int  svm_chardev_init(void);
 void svm_chardev_exit(void);
@@ -248,7 +235,6 @@ void svm_chardev_exit(void);
 int  svm_ghost_init(void);
 void svm_ghost_exit(void);
 
->>>>>>> 4f7675a (V6.7 Yarı çözüm)
 /* Inline helpers */
 static inline bool svm_check_access(void)
 {

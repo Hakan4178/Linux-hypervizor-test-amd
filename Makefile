@@ -5,11 +5,7 @@ KDIR := /lib/modules/$(shell uname -r)/build
 PWD  := $(shell pwd)
 
 obj-m += ring_minus_one.o
-<<<<<<< HEAD
-ring_minus_one-objs := main.o vmexit.o svm_dump.o npt_walk.o svm_trace.o svm_engine.o tsc_stealth.o
-=======
 ring_minus_one-objs := main.o vmexit.o svm_dump.o npt_walk.o svm_trace.o svm_engine.o tsc_stealth.o svm_chardev.o svm_ghost.o
->>>>>>> 4f7675a (V6.7 Yarı çözüm)
 
 # ─── Sertleştirilmiş Derleyici Bayrakları ───
 # -Werror           : Tüm uyarılar hata olarak ele alınır
@@ -56,15 +52,6 @@ ccflags-y += $(call cc-option,-Wlogical-op)
 ccflags-y += $(call cc-option,-Wduplicated-cond)
 ccflags-y += $(call cc-option,-Wjump-misses-init)
 
-<<<<<<< HEAD
-# ─── Stack Protector (buffer overflow runtime guard) ───
-ccflags-y += -fstack-protector-strong
-
-# ─── Stealth & Optimization Flags ───
-# -Os: Minimize binary size
-# -g0: Do not generate debug info
-ccflags-y += -Os -g0
-=======
 # ─── Information Leak (Uninitialized Var) Koruması ───
 # Tanımlanan tüm yerel C değişkenlerini sıfırlar. Leak engeller.
 ccflags-y += $(call cc-option,-ftrivial-auto-var-init=zero)
@@ -79,7 +66,6 @@ ccflags-y += $(call cc-option,--param=ssp-buffer-size=4)
 # -g0: Do not generate debug info
 # -mno-red-zone: Interrupt kernel stack collision avoidance
 ccflags-y += -O2 -g0 -mno-red-zone
->>>>>>> 4f7675a (V6.7 Yarı çözüm)
 
 # ─── Hedefler ───
 all:
