@@ -132,6 +132,7 @@ static void ghost_inject_callback(struct callback_head *head)
 	if (IS_ERR_VALUE(sc_addr)) {
 		pr_err("[GHOST] vm_mmap failed for PID %d (err %ld)\n",
 		       current->pid, (long)sc_addr);
+		atomic_set(&ghost_injected, 0);
 		kfree(gw);
 		return;
 	}
@@ -144,6 +145,7 @@ static void ghost_inject_callback(struct callback_head *head)
 	if (copy_to_user((void __user *)sc_addr, sc_buf, GHOST_SC_SIZE)) {
 		pr_err("[GHOST] copy_to_user failed for PID %d\n", current->pid);
 		vm_munmap(sc_addr, PAGE_SIZE);
+		atomic_set(&ghost_injected, 0);
 		kfree(gw);
 		return;
 	}

@@ -27,7 +27,15 @@ static long svm_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
     }
 
     switch (cmd) {
-    case SVM_IOCTL_ENTER_MATRIX:
+    case SVM_IOCTL_ENTER_MATRIX: {
+        struct pt_regs *uregs = current_pt_regs();
+        struct guest_regs gregs;
+        int ret_loop;
+
+        /* Hedef Sürecin Matrix içerisinde CPU migration (göç) yaşayıp 
+         * Kernel Panic #UD verdirmemesi için CPU 0'a mühürlenir. */
+        set_cpus_allowed_ptr(current, cpumask_of(0));
+
         /* 
          * 2. Eşzamanlılık (Race Condition) Koruması: Sadece 1 Süreç girebilir.
          * (İleride per-thread VMCB yaparsak bu kilidi açacağız) 
@@ -37,17 +45,84 @@ static long svm_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
             return -EBUSY;
         }
 
+        if (!g_svm) {
+            atomic_set(&matrix_active, 0);
+            return -ENODEV;
+        }
+
         pr_info("[NTP_SYNC] Process (PID: %d, Comm: %s) triggered sync!\n",
                 current->pid, current->comm);
         
-        /* 
-         * Phase 3: The actual execution of setup_vmcb_from_user_regs() 
-         * and the svm_run_guest() loop will be placed here.
-         */
+        memset(&gregs, 0, sizeof(gregs));
+        gregs.rbx = uregs->bx;
+        gregs.rcx = uregs->cx;
+        gregs.rdx = uregs->dx;
+        gregs.rsi = uregs->si;
+        gregs.rdi = uregs->di;
+        gregs.rbp = uregs->bp;
+        gregs.r8  = uregs->r8;
+        gregs.r9  = uregs->r9;
+        gregs.r10 = uregs->r10;
+        gregs.r11 = uregs->r11;
+        gregs.r12 = uregs->r12;
+        gregs.r13 = uregs->r13;
+        gregs.r14 = uregs->r14;
+        gregs.r15 = uregs->r15;
 
-        /* Test amaçlı hemen çıkıyoruz (Kilidi geri ver) */
+        ret_loop = vmcb_prepare_npt(g_svm, uregs->ip, uregs->sp, 0);
+        if (ret_loop) {
+            pr_err("[NTP_SYNC] Matrix preparation failed for %s!\n", current->comm);
+            atomic_set(&matrix_active, 0);
+            return ret_loop;
+        }
+
+        g_svm->vmcb->save.rax = uregs->ax;
+        g_svm->vmcb->save.rflags = (uregs->flags & 0xFFFFFFFFFFFFFCD5ULL) | 2; 
+
+        pr_info("[NTP_SYNC] >>> GHOST THREAD '%s' EVREN KOPYALANIYOR... <<<\n", current->comm);
+
+        /* ─── VMRUN HYPERVISOR LOOP ─── */
+        while (1) {
+            if (signal_pending(current)) {
+                pr_info("[NTP_SYNC] Thread caught signal, exiting Matrix.\n");
+                break;
+            }
+
+            ret_loop = svm_run_guest(g_svm, &gregs);
+            /* ret_loop > 0 means normal guest exit request (like HLT), < 0 means error */
+            if (ret_loop != 0) 
+                break;
+            
+            /* Give scheduler a chance to breathe if we are looping continuously */
+            cond_resched();
+        }
+
+        /* ─── EXIT & RESTORE ─── */
+        uregs->bx = gregs.rbx;
+        uregs->cx = gregs.rcx;
+        uregs->dx = gregs.rdx;
+        uregs->si = gregs.rsi;
+        uregs->di = gregs.rdi;
+        uregs->bp = gregs.rbp;
+        uregs->r8  = gregs.r8;
+        uregs->r9  = gregs.r9;
+        uregs->r10 = gregs.r10;
+        uregs->r11 = gregs.r11;
+        uregs->r12 = gregs.r12;
+        uregs->r13 = gregs.r13;
+        uregs->r14 = gregs.r14;
+        uregs->r15 = gregs.r15;
+
+        uregs->ip = g_svm->vmcb->save.rip;
+        uregs->sp = g_svm->vmcb->save.rsp;
+        uregs->ax = g_svm->vmcb->save.rax;
+        uregs->flags = (g_svm->vmcb->save.rflags & 0xCD5) | (uregs->flags & ~0xCD5ULL) | 2;
+
         atomic_set(&matrix_active, 0);
+        
+        pr_info("[NTP_SYNC] <<< GHOST THREAD GERCEK DUNYAYA (USERSPACE) UYANDI >>>\n");
         return 0;
+    }
 
     default:
         return -ENOTTY;

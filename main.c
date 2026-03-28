@@ -270,7 +270,8 @@ static int __init svm_module_init(void) {
   int ret;
   u32 eax, ebx, ecx, edx;
 
-  /* Phase 3.1: No longer binding entire module init to CPU 0 */
+  /* Phase 3.3 Patch: Pin initialization to CPU 0 to prevent MSR fragmentation (#UD invalid opcode on CLGI) */
+  set_cpus_allowed_ptr(current, cpumask_of(0));
 
   pr_info("=== SVM Modülü Başlatılıyor ===\n");
 

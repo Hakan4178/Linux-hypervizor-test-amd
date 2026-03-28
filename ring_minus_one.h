@@ -153,6 +153,8 @@ struct svm_context {
     phys_addr_t  iopm_pa;
     
     struct npt_context npt;
+    
+    u64 pending_rearm_gpa;
 };
 
 struct snap_context {

@@ -128,84 +128,10 @@ void vmrun_safe(u64 vmcb_pa)
  *   6. Save guest GPRs to @regs
  *   7. Pop host callee-saved regs
  */
-void vmrun_with_regs(u64 vmcb_pa, struct guest_regs *regs)
-{
-    if (unlikely(!regs)) {
-        pr_err("[SVM] vmrun_with_regs NULL regs pointer koruması tetiklendi!\n");
-        return;
-    }
-
-    asm volatile (
-        /* === Save host callee-saved registers === */
-        "push %%rbx   \n\t"
-        "push %%r12   \n\t"
-        "push %%r13   \n\t"
-        "push %%r14   \n\t"
-        "push %%r15   \n\t"
-        "push %%rbp   \n\t"
-
-        /* === Save regs pointer on stack === */
-        "push %%rsi   \n\t"
-
-        /* === Load guest GPRs from struct (RSI = regs pointer) === */
-        "mov  0x00(%%rsi), %%rbx \n\t"   /* regs->rbx */
-        "mov  0x08(%%rsi), %%rcx \n\t"   /* regs->rcx */
-        "mov  0x10(%%rsi), %%rdx \n\t"   /* regs->rdx */
-        /* skip rsi (0x18) — load LAST */
-        "mov  0x20(%%rsi), %%rdi \n\t"   /* regs->rdi */
-        "mov  0x28(%%rsi), %%rbp \n\t"   /* regs->rbp */
-        "mov  0x30(%%rsi), %%r8  \n\t"   /* regs->r8  */
-        "mov  0x38(%%rsi), %%r9  \n\t"   /* regs->r9  */
-        "mov  0x40(%%rsi), %%r10 \n\t"   /* regs->r10 */
-        "mov  0x48(%%rsi), %%r11 \n\t"   /* regs->r11 */
-        "mov  0x50(%%rsi), %%r12 \n\t"   /* regs->r12 */
-        "mov  0x58(%%rsi), %%r13 \n\t"   /* regs->r13 */
-        "mov  0x60(%%rsi), %%r14 \n\t"   /* regs->r14 */
-        "mov  0x68(%%rsi), %%r15 \n\t"   /* regs->r15 */
-        "mov  0x18(%%rsi), %%rsi \n\t"   /* regs->rsi — LAST! */
-
-        /* === VMRUN === */
-        "clgi         \n\t"
-        "vmrun %%rax  \n\t"
-        "stgi         \n\t"
-
-        /* === After VMEXIT: all GPRs = guest values === */
-        /* Recover regs pointer: swap guest RSI with saved pointer */
-        "xchg %%rsi, (%%rsp) \n\t"
-        /* Now: RSI = regs pointer, (RSP) = guest RSI */
-
-        /* === Save guest GPRs to struct === */
-        "mov  %%rbx, 0x00(%%rsi) \n\t"   /* regs->rbx */
-        "mov  %%rcx, 0x08(%%rsi) \n\t"   /* regs->rcx */
-        "mov  %%rdx, 0x10(%%rsi) \n\t"   /* regs->rdx */
-        /* Save guest RSI from stack */
-        "pop  %%rbx              \n\t"   /* rbx = guest RSI */
-        "mov  %%rbx, 0x18(%%rsi) \n\t"   /* regs->rsi */
-        "mov  %%rdi, 0x20(%%rsi) \n\t"   /* regs->rdi */
-        "mov  %%rbp, 0x28(%%rsi) \n\t"   /* regs->rbp */
-        "mov  %%r8,  0x30(%%rsi) \n\t"   /* regs->r8  */
-        "mov  %%r9,  0x38(%%rsi) \n\t"   /* regs->r9  */
-        "mov  %%r10, 0x40(%%rsi) \n\t"   /* regs->r10 */
-        "mov  %%r11, 0x48(%%rsi) \n\t"   /* regs->r11 */
-        "mov  %%r12, 0x50(%%rsi) \n\t"   /* regs->r12 */
-        "mov  %%r13, 0x58(%%rsi) \n\t"   /* regs->r13 */
-        "mov  %%r14, 0x60(%%rsi) \n\t"   /* regs->r14 */
-        "mov  %%r15, 0x68(%%rsi) \n\t"   /* regs->r15 */
-
-        /* === Restore host callee-saved registers === */
-        "pop  %%rbp   \n\t"
-        "pop  %%r15   \n\t"
-        "pop  %%r14   \n\t"
-        "pop  %%r13   \n\t"
-        "pop  %%r12   \n\t"
-        "pop  %%rbx   \n\t"
-        :
-        : "a"(vmcb_pa), "S"(regs)
-        : "memory", "cc", "rcx", "rdx", "rdi",
-          "r8", "r9", "r10", "r11"
-    );
-}
-
+/*
+ * vmrun_with_regs - is now entirely moved to svm_asm.S
+ * to ensure compiler optimizations cannot trash the registers.
+ */
 /*
  * raw_cr3_flush - CR3 yeniden yükle (TLB flush)
  */

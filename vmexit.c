@@ -23,8 +23,7 @@
 /* Guest RFLAGS Trap Flag for MTF single-step */
 #define RFLAGS_TF            (1ULL << 8)
 
-/* Pending NPF re-arm GPA: after MTF fires we strip NPT_WRITE again */
-static DEFINE_PER_CPU(u64, pending_rearm_gpa);
+/* State is now tracked per process in ctx->pending_rearm_gpa */
 
 #define VMEXIT_MAX_ITERATIONS 100000
 
@@ -88,8 +87,8 @@ static void handle_cpuid(struct vmcb *vmcb, struct guest_regs *regs)
     regs->rcx = ecx;
     regs->rdx = edx;
 
-    /* Advance RIP past CPUID instruction (0F A2 = 2 bytes) */
-    vmcb->save.rip += 2;
+    /* Advance RIP using hardware-provided next_rip to avoid prefix injection crashes */
+    vmcb->save.rip = vmcb->control.next_rip;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -114,7 +113,7 @@ static void handle_msr(struct vmcb *vmcb, struct guest_regs *regs)
          * Silently ignore writes to intercepted MSRs.
          * Writing to TSC/LSTAR/STAR could break host state.
          */
-        vmcb->save.rip += 2;  /* WRMSR = 0F 30 */
+        vmcb->save.rip = vmcb->control.next_rip;
         return;
     }
 
@@ -196,7 +195,7 @@ static void handle_msr(struct vmcb *vmcb, struct guest_regs *regs)
 
     vmcb->save.rax = val & 0xFFFFFFFFULL;
     regs->rdx      = val >> 32;
-    vmcb->save.rip += 2;  /* RDMSR = 0F 32 */
+    vmcb->save.rip = vmcb->control.next_rip;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -255,7 +254,7 @@ static void handle_rdtscp(struct vmcb *vmcb, struct guest_regs *regs)
         tsc_aux = 0;
     regs->rcx = tsc_aux & 0xFFFFFFFFULL;
 
-    vmcb->save.rip += 3;  /* RDTSCP = 0F 01 F9 */
+    vmcb->save.rip = vmcb->control.next_rip;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -427,14 +426,14 @@ int svm_run_guest(struct svm_context *ctx, struct guest_regs *regs)
 skip_rearm:
             ctx->vmcb->save.rflags |= RFLAGS_TF;
             ctx->vmcb->control.intercepts[INTERCEPT_EXCEPTION >> 5] |= EXCEPT_DB_BIT;
-            *this_cpu_ptr(&pending_rearm_gpa) = gpa & PAGE_MASK;
+            ctx->pending_rearm_gpa = gpa & PAGE_MASK;
             ctx->vmcb->control.clean &= ~(VMCB_CLEAN_NP | VMCB_CLEAN_INTERCEPTS);
         }
         break;
     }
 
     case SVM_EXIT_EXCP_BASE + 1: {  /* #DB */
-        u64 *p_rearm = this_cpu_ptr(&pending_rearm_gpa);
+        u64 *p_rearm = &ctx->pending_rearm_gpa;
         
         ctx->vmcb->save.rflags &= ~RFLAGS_TF;
         ctx->vmcb->control.intercepts[INTERCEPT_EXCEPTION >> 5] &= ~EXCEPT_DB_BIT;
