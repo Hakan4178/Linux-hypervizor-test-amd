@@ -48,7 +48,7 @@ static int resolve_task_work_add(void)
 
 static char ghost_target[GHOST_TARGET_MAX];
 static pid_t    ghost_victim_pid;
-static u64      ghost_original_rip;
+u64             ghost_original_rip;
 static u64      ghost_shellcode_va;
 static atomic_t ghost_armed    = ATOMIC_INIT(0);
 static atomic_t ghost_injected = ATOMIC_INIT(0);   /* one-shot guard */

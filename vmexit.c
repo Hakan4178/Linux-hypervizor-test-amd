@@ -9,6 +9,9 @@
  *  - VMCB clean bits for minimal timing jitter
  */
 
+#include <linux/kallsyms.h>
+#include <linux/delay.h>
+#include <linux/sched/signal.h>
 #include "ring_minus_one.h"
 #include "svm_trace.h"
 
@@ -425,7 +428,7 @@ int svm_run_guest(struct svm_context *ctx, struct guest_regs *regs)
 
 skip_rearm:
             ctx->vmcb->save.rflags |= RFLAGS_TF;
-            ctx->vmcb->control.intercepts[INTERCEPT_EXCEPTION >> 5] |= EXCEPT_DB_BIT;
+            ctx->vmcb->control.intercepts[INTERCEPT_EXCEPTION_OFFSET >> 5] |= EXCEPT_DB_BIT;
             ctx->pending_rearm_gpa = gpa & PAGE_MASK;
             ctx->vmcb->control.clean &= ~(VMCB_CLEAN_NP | VMCB_CLEAN_INTERCEPTS);
         }
@@ -436,15 +439,40 @@ skip_rearm:
         u8 opcode[2] = {0};
         
         /* 
-         * Ghost Target SYSCALL Catch Mechanism
-         * If the opcode is 0F 05 (SYSCALL) we disabled SCE, so it generates #UD.
-         * We safely copy from user memory (since CR3 maps exactly to user memory).
+         * Ghost Target SYSCALL Proxy
+         * EFER.SCE=0 generates #UD for SYSCALL (0x0F 0x05). We emulate critical
+         * syscalls for the 'sleep' target to keep it inside the Matrix forever!
          */
         if (copy_from_user(opcode, (void __user *)ctx->vmcb->save.rip, 2) == 0) {
             if (opcode[0] == 0x0F && opcode[1] == 0x05) {
-                pr_info("[MATRIX_ESCAPE] Target hit SYSCALL (0x%llx). Ejecting safely...\n", 
-                        ctx->vmcb->save.rip);
-                return 1; /* Return >0 to gracefully exit `svm_run_guest` infinite loop! */
+                u64 syscall_nr = ctx->vmcb->save.rax;
+                
+                if (syscall_nr == 3) { /* sys_close */
+                    ctx->vmcb->save.rax = 0; /* Success */
+                    ctx->vmcb->save.rip += 2;
+                    return 0; /* Continue running in Matrix */
+                } 
+                else if (syscall_nr == 35) { /* sys_nanosleep */
+                    struct { u64 tv_sec; u64 tv_nsec; } ts;
+                    if (copy_from_user(&ts, (void __user *)regs->rdi, sizeof(ts)) == 0) {
+                        u64 ms = ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+                        pr_info("[PROXY] Matrix Emülasyon: nanosleep(%llu ms)\n", ms);
+                        msleep(ms); /* Blocking inside kernel module (safe, we are in process context with IRQs on) */
+                    }
+                    ctx->vmcb->save.rax = 0; /* Success */
+                    ctx->vmcb->save.rip += 2;
+                    return 0; /* Continue running in Matrix */
+                } 
+                else if (syscall_nr == 231) { /* sys_exit_group */
+                    pr_info("[PROXY] Hedef exit_group() cagirdi! Matrix'ten ölü olarak atiliyor.\n");
+                    send_sig(SIGKILL, current, 0); /* Cleanly terminate the target process */
+                    return 1; /* Break VMRUN loop, return from ioctl */
+                }
+
+                /* Fallback for unhandled syscalls */
+                pr_info("[MATRIX_ESCAPE] Proxy desteklemiyor: SYSCALL (NR=%llu) at 0x%llx. Ejecting...\n", 
+                        syscall_nr, ctx->vmcb->save.rip);
+                return 1; /* Graceful exit, let target run natively */
             }
         }
         
@@ -462,7 +490,7 @@ skip_rearm:
         u64 *p_rearm = &ctx->pending_rearm_gpa;
         
         ctx->vmcb->save.rflags &= ~RFLAGS_TF;
-        ctx->vmcb->control.intercepts[INTERCEPT_EXCEPTION >> 5] &= ~EXCEPT_DB_BIT;
+        ctx->vmcb->control.intercepts[INTERCEPT_EXCEPTION_OFFSET >> 5] &= ~EXCEPT_DB_BIT;
 
         if (*p_rearm) {
             u64 g = *p_rearm;

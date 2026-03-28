@@ -132,8 +132,8 @@ int vmcb_prepare_npt(struct svm_context *ctx, u64 g_rip, u64 g_rsp, u64 g_cr3) {
    *          Bu intercepti koymazsak CPU, Guest IDT'ye dalar → SMEP panic.
    * #PF (14): NPF zaten var ama guest-level #PF'i de yakala (güvenlik ağı).
    */
-  vmcb->control.intercepts[INTERCEPT_EXCEPTION >> 5] |= (1U << 6);   /* #UD */
-  vmcb->control.intercepts[INTERCEPT_EXCEPTION >> 5] |= (1U << 14);  /* #PF */
+  vmcb->control.intercepts[INTERCEPT_EXCEPTION_OFFSET >> 5] |= (1U << 6);   /* #UD */
+  vmcb->control.intercepts[INTERCEPT_EXCEPTION_OFFSET >> 5] |= (1U << 14);  /* #PF */
 
   /* ── MSRPM V5.0: Macro-Based Addressing (AMD APM Vol.2 §15.11) ── */
   if (ctx->msrpm_va) {
@@ -271,32 +271,38 @@ int vmcb_prepare_npt(struct svm_context *ctx, u64 g_rip, u64 g_rsp, u64 g_cr3) {
     vmcb->save.tr.attrib = 0x0089; /* Type=0x9 (Available 64-bit TSS), P=1 */
   }
 
-  /* ── Segment Registers ── */
-  vmcb->save.cs.selector = cs;
-  vmcb->save.cs.attrib = 0x029B;
+  /* ── Segment Registers (Ring 3 / CPL=3) ── */
+  vmcb->save.cpl = 3; /* Matrix'te hedef User Mode'da koşmalı (SMEP engeli olmaması için) */
+
+  /* Gerçek Linux User Mode selector'ları kullan.
+   * Host CS=0x10 (kernel), ama Guest User CS=0x33 (__USER_CS) olmalı.
+   * 0x10 | 3 = 0x13 yaparsak geçersiz GDT girişine dallanır → #GP.
+   */
+  vmcb->save.cs.selector = __USER_CS;  /* 0x33 */
+  vmcb->save.cs.attrib = 0x02FB;       /* L=1, DPL=3, Type=0xB (Execute/Read) */
   vmcb->save.cs.limit = 0xFFFFFFFF;
   vmcb->save.cs.base = 0;
 
-  vmcb->save.ds.selector = ds;
-  vmcb->save.ds.attrib = 0x0093;
+  vmcb->save.ds.selector = __USER_DS;  /* 0x2B */
+  vmcb->save.ds.attrib = 0x00F3;       /* DPL=3, Type=0x3 (Read/Write) */
   vmcb->save.ds.limit = 0xFFFFFFFF;
   vmcb->save.ds.base = 0;
 
-  vmcb->save.es.selector = es;
-  vmcb->save.es.attrib = 0x0093;
+  vmcb->save.es.selector = __USER_DS;
+  vmcb->save.es.attrib = 0x00F3;
   vmcb->save.es.limit = 0xFFFFFFFF;
   vmcb->save.es.base = 0;
 
-  vmcb->save.ss.selector = ss;
-  vmcb->save.ss.attrib = 0x0093;
+  vmcb->save.ss.selector = __USER_DS;
+  vmcb->save.ss.attrib = 0x00F3;
   vmcb->save.ss.limit = 0xFFFFFFFF;
   vmcb->save.ss.base = 0;
 
-  vmcb->save.fs.selector = fs;
-  vmcb->save.fs.attrib = 0x0093;
+  vmcb->save.fs.selector = 0;
+  vmcb->save.fs.attrib = 0x00F3;
   vmcb->save.fs.limit = 0xFFFFFFFF;
-  vmcb->save.gs.selector = gs;
-  vmcb->save.gs.attrib = 0x0093;
+  vmcb->save.gs.selector = 0;
+  vmcb->save.gs.attrib = 0x00F3;
   vmcb->save.gs.limit = 0xFFFFFFFF;
   vmcb->save.gs.base = gs_base;
 
@@ -305,32 +311,13 @@ int vmcb_prepare_npt(struct svm_context *ctx, u64 g_rip, u64 g_rsp, u64 g_cr3) {
   vmcb->save.idtr.limit = idtr.size;
   vmcb->save.idtr.base = idtr.address;
 
-  vmcb->save.tr.selector = tr;
-  vmcb->save.tr.limit = 0xFFFF;
-  vmcb->save.tr.attrib = 0x008B;
-
-  /* Güvenlik (Zero-Day Mod): Host TR base'inin GDT üzerinden tam okunması */
-  {
-    u8 *gdt = (u8 *)gdtr.address;
-    u16 idx = tr & ~7;
-    u64 tr_base = 0;
-    if (gdt) {
-      /* FIX: Prevent 32-bit sign extension by casting to u64 before shift */
-      tr_base = ((u64)gdt[idx + 2]) | ((u64)gdt[idx + 3] << 8) |
-                ((u64)gdt[idx + 4] << 16) | ((u64)gdt[idx + 7] << 24);
-      /* 64-bit modunda TSS 16-byte'tır. Üst 32-biti de oku. */
-      tr_base |= ((u64)(*(u32 *)(&gdt[idx + 8])) << 32);
-    }
-    vmcb->save.tr.base = tr_base;
-  }
-
   /* Control registers */
   vmcb->save.cr0 = cr0;
   vmcb->save.cr3 = (g_cr3 && pfn_valid(g_cr3 >> PAGE_SHIFT))
                        ? g_cr3
                        : (cr3 & 0xFFFFFFFFFFFFF000ULL);
   vmcb->save.cr4 = cr4;
-  vmcb->save.efer = efer_val;
+  /* EFER zaten satır 233'te doğru ayarlandı (SVME=1, SCE=0). Tekrar ATANMAYAcak! */
 
   /* Debug registers */
   vmcb->save.dr6 = 0xFFFF0FF0;
