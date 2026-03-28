@@ -1,5 +1,9 @@
 # Barmetal
 
+Devlog: Yaşasın Triple fault çözüldü yarı stabil modül yüklendi. Python tarafında kernel panic var.
+
+Kapatılan açık sayısı:119 (Kritik bir memory leak oom olmadan zram sayesinde ucunda kurtarıldı.) Patchlendi.
+
 Barmetal is a Ring-1 (Hypervisor) level Virtual Machine Introspection (VMI) research engine designed for AMD processors. It operates below the standard operating system layer by utilizing AMD SVM (Secure Virtual Machine) hardware extensions.
 
 ## Current Architecture and Phases
@@ -52,3 +56,5 @@ sudo python3 tools/svm_cli.py dump --pid <target_pid> -o snapshot.bin
 ```bash
 sudo rmmod ring_minus_one
 ```
+
+Özgürlük için...  Made by "Türk Gençliği" <3 <3 <3
