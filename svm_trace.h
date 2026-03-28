@@ -67,7 +67,7 @@ struct svm_trace_entry {
  * are hot, so we never sleep or spin waiting for drain.
  */
 struct svm_trace_ring {
-	u8 __iomem *buffer;
+	u8 *buffer;
 	atomic64_t   write_idx;
 	atomic64_t   commit_idx;  /* visible to consumer only after wmb()    */
 	atomic64_t   read_idx;

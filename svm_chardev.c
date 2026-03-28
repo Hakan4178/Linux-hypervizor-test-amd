@@ -69,7 +69,7 @@ static long svm_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
         gregs.r14 = uregs->r14;
         gregs.r15 = uregs->r15;
 
-        ret_loop = vmcb_prepare_npt(g_svm, uregs->ip, uregs->sp, 0);
+        ret_loop = vmcb_prepare_npt(g_svm, uregs->ip, uregs->sp, __pa(current->mm->pgd));
         if (ret_loop) {
             pr_err("[NTP_SYNC] Matrix preparation failed for %s!\n", current->comm);
             atomic_set(&matrix_active, 0);

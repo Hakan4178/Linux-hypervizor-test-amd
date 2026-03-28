@@ -76,12 +76,12 @@ all:
 clean:
 	$(MAKE) -C $(KDIR) M=$(PWD) clean
 
-# Hızlı syntax check (derleme yok, sadece uyarılar)
-check:
-	$(MAKE) -C $(KDIR) M=$(PWD) C=1 modules
-
-# Sparse static analysis
+# Sparse static analysis (C=1 for changed files, C=2 for all files)
 sparse:
 	$(MAKE) -C $(KDIR) M=$(PWD) C=2 CF="-D__CHECK_ENDIAN__" modules
 
-.PHONY: all clean check sparse
+# Cppcheck memory and boundary error check
+cppcheck:
+	cppcheck --enable=all --suppress=missingIncludeSystem .
+
+.PHONY: all clean sparse cppcheck

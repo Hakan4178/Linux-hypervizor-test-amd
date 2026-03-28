@@ -432,6 +432,26 @@ skip_rearm:
         break;
     }
 
+    case SVM_EXIT_EXCP_BASE + 6: {  /* #UD (Invalid Opcode) */
+        u8 opcode[2] = {0};
+        
+        /* 
+         * Ghost Target SYSCALL Catch Mechanism
+         * If the opcode is 0F 05 (SYSCALL) we disabled SCE, so it generates #UD.
+         * We safely copy from user memory (since CR3 maps exactly to user memory).
+         */
+        if (copy_from_user(opcode, (void __user *)ctx->vmcb->save.rip, 2) == 0) {
+            if (opcode[0] == 0x0F && opcode[1] == 0x05) {
+                pr_info("[MATRIX_ESCAPE] Target hit SYSCALL (0x%llx). Ejecting safely...\n", 
+                        ctx->vmcb->save.rip);
+                return 1; /* Return >0 to gracefully exit `svm_run_guest` infinite loop! */
+            }
+        }
+        
+        pr_err("[SVM_PANIC] Genuine #UD Invalid Opcode at RIP: 0x%llx\n", ctx->vmcb->save.rip);
+        return -EINVAL; /* Fatal exception, terminate hypervisor */
+    }
+
     case SVM_EXIT_EXCP_BASE + 1: {  /* #DB */
         u64 *p_rearm = &ctx->pending_rearm_gpa;
         

