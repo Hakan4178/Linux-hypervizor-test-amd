@@ -42,21 +42,21 @@ struct snap_context *g_snap = &snap_ctx;
  *  Her MSR için 2 bit: bit0=RDMSR intercept, bit1=WRMSR intercept
  * ═══════════════════════════════════════════════════════════════════════════
  */
-#define MSRPM_BYTE_OFF(base, msr)  ((base) + ((msr) & 0x1FFF) * 2 / 8)
-#define MSRPM_BIT_POS(msr)         (((msr) & 0x1FFF) * 2 % 8)
+#define MSRPM_BYTE_OFF(base, msr) ((base) + ((msr) & 0x1FFF) * 2 / 8)
+#define MSRPM_BIT_POS(msr) (((msr) & 0x1FFF) * 2 % 8)
 
 /* Bölge base offset'leri */
-#define MSRPM_BASE_LOW   0x0000  /* 0x0000_0000 – 0x0000_1FFF */
-#define MSRPM_BASE_C000  0x0800  /* 0xC000_0000 – 0xC000_1FFF */
-#define MSRPM_BASE_C001  0x1000  /* 0xC001_0000 – 0xC001_1FFF */
+#define MSRPM_BASE_LOW 0x0000  /* 0x0000_0000 – 0x0000_1FFF */
+#define MSRPM_BASE_C000 0x0800 /* 0xC000_0000 – 0xC000_1FFF */
+#define MSRPM_BASE_C001 0x1000 /* 0xC001_0000 – 0xC001_1FFF */
 
 /* Kısayol: rdmsr intercept (bit 0) */
-#define MSRPM_SET_RD(pm, base, msr) \
-    (pm)[MSRPM_BYTE_OFF(base,msr)] |= (1 << MSRPM_BIT_POS(msr))
+#define MSRPM_SET_RD(pm, base, msr)                                            \
+  (pm)[MSRPM_BYTE_OFF(base, msr)] |= (1 << MSRPM_BIT_POS(msr))
 
 /* Kısayol: rdmsr + wrmsr intercept (bit 0 + bit 1) */
-#define MSRPM_SET_RW(pm, base, msr) \
-    (pm)[MSRPM_BYTE_OFF(base,msr)] |= (3 << MSRPM_BIT_POS(msr))
+#define MSRPM_SET_RW(pm, base, msr)                                            \
+  (pm)[MSRPM_BYTE_OFF(base, msr)] |= (3 << MSRPM_BIT_POS(msr))
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  VMCB Prepare — V4.0 Stealth Intercepts
@@ -127,21 +127,32 @@ int vmcb_prepare_npt(struct svm_context *ctx, u64 g_rip, u64 g_rsp, u64 g_cr3) {
       (1U << (INTERCEPT_RDTSCP & 31));
 #endif
 
+  /* ── Exception Intercepts ──
+   * #UD (6): EFER.SCE kapalı olduğu için SYSCALL → #UD üretir.
+   *          Bu intercepti koymazsak CPU, Guest IDT'ye dalar → SMEP panic.
+   * #PF (14): NPF zaten var ama guest-level #PF'i de yakala (güvenlik ağı).
+   */
+  vmcb->control.intercepts[INTERCEPT_EXCEPTION >> 5] |= (1U << 6);   /* #UD */
+  vmcb->control.intercepts[INTERCEPT_EXCEPTION >> 5] |= (1U << 14);  /* #PF */
+
   /* ── MSRPM V5.0: Macro-Based Addressing (AMD APM Vol.2 §15.11) ── */
   if (ctx->msrpm_va) {
     u8 *msrpm = (u8 *)ctx->msrpm_va;
 
     /* ── Bölge 0: MSR 0x0000xxxx (Low MSRs) ── */
-    MSRPM_SET_RD(msrpm, MSRPM_BASE_LOW, 0x10);   /* IA32_TSC: rdmsr */
-    MSRPM_SET_RD(msrpm, MSRPM_BASE_LOW, 0xE7);   /* IA32_MPERF: rdmsr */
-    MSRPM_SET_RD(msrpm, MSRPM_BASE_LOW, 0xE8);   /* IA32_APERF: rdmsr */
-    MSRPM_SET_RD(msrpm, MSRPM_BASE_LOW, 0x176);  /* IA32_SYSENTER_EIP: rdmsr */
-    MSRPM_SET_RW(msrpm, MSRPM_BASE_LOW, 0x1D9);  /* IA32_DEBUGCTL: rd+wr (BTS block) */
-    MSRPM_SET_RD(msrpm, MSRPM_BASE_LOW, 0x309);  /* IA32_FIXED_CTR0: rdmsr */
-    MSRPM_SET_RD(msrpm, MSRPM_BASE_LOW, 0x30A);  /* IA32_FIXED_CTR1: rdmsr */
-    MSRPM_SET_RD(msrpm, MSRPM_BASE_LOW, 0x30B);  /* IA32_FIXED_CTR2: rdmsr */
-    MSRPM_SET_RW(msrpm, MSRPM_BASE_LOW, 0x38D);  /* IA32_PERF_FIXED_CTR_CTRL: rd+wr */
-    MSRPM_SET_RW(msrpm, MSRPM_BASE_LOW, 0x38F);  /* IA32_PERF_GLOBAL_CTRL: rd+wr */
+    MSRPM_SET_RD(msrpm, MSRPM_BASE_LOW, 0x10);  /* IA32_TSC: rdmsr */
+    MSRPM_SET_RD(msrpm, MSRPM_BASE_LOW, 0xE7);  /* IA32_MPERF: rdmsr */
+    MSRPM_SET_RD(msrpm, MSRPM_BASE_LOW, 0xE8);  /* IA32_APERF: rdmsr */
+    MSRPM_SET_RD(msrpm, MSRPM_BASE_LOW, 0x176); /* IA32_SYSENTER_EIP: rdmsr */
+    MSRPM_SET_RW(msrpm, MSRPM_BASE_LOW,
+                 0x1D9); /* IA32_DEBUGCTL: rd+wr (BTS block) */
+    MSRPM_SET_RD(msrpm, MSRPM_BASE_LOW, 0x309); /* IA32_FIXED_CTR0: rdmsr */
+    MSRPM_SET_RD(msrpm, MSRPM_BASE_LOW, 0x30A); /* IA32_FIXED_CTR1: rdmsr */
+    MSRPM_SET_RD(msrpm, MSRPM_BASE_LOW, 0x30B); /* IA32_FIXED_CTR2: rdmsr */
+    MSRPM_SET_RW(msrpm, MSRPM_BASE_LOW,
+                 0x38D); /* IA32_PERF_FIXED_CTR_CTRL: rd+wr */
+    MSRPM_SET_RW(msrpm, MSRPM_BASE_LOW,
+                 0x38F); /* IA32_PERF_GLOBAL_CTRL: rd+wr */
 
     /* ── Bölge 1: MSR 0xC000xxxx ── */
     MSRPM_SET_RW(msrpm, MSRPM_BASE_C000, 0x81);  /* STAR: rd+wr */
@@ -149,8 +160,10 @@ int vmcb_prepare_npt(struct svm_context *ctx, u64 g_rip, u64 g_rsp, u64 g_cr3) {
     MSRPM_SET_RD(msrpm, MSRPM_BASE_C000, 0x103); /* TSC_AUX: rdmsr */
 
     /* ── Bölge 2: MSR 0xC001xxxx ── */
-    MSRPM_SET_RD(msrpm, MSRPM_BASE_C001, 0x15);  /* K8_HWCR (0xC0010015): SVME_LOCK spoofing */
-    MSRPM_SET_RD(msrpm, MSRPM_BASE_C001, 0x114); /* SVM_LOCK_KEY (0xC0010114): SVM hiding */
+    MSRPM_SET_RD(msrpm, MSRPM_BASE_C001,
+                 0x15); /* K8_HWCR (0xC0010015): SVME_LOCK spoofing */
+    MSRPM_SET_RD(msrpm, MSRPM_BASE_C001,
+                 0x114); /* SVM_LOCK_KEY (0xC0010114): SVM hiding */
   }
 
   /* ── IOPM: Timer I/O port coverage ── */
@@ -182,16 +195,15 @@ int vmcb_prepare_npt(struct svm_context *ctx, u64 g_rip, u64 g_rsp, u64 g_cr3) {
   vmcb->control.clean = 0;
 
   /* NPT configuration — Strengthened validation (Security Fix #2) */
-  if (npt && npt->pml4_pa && 
-      IS_ALIGNED(npt->pml4_pa, PAGE_SIZE) &&
-      pfn_valid(npt->pml4_pa >> PAGE_SHIFT) &&
-      npt->pml4 != NULL) {
+  if (npt && npt->pml4_pa && IS_ALIGNED(npt->pml4_pa, PAGE_SIZE) &&
+      pfn_valid(npt->pml4_pa >> PAGE_SHIFT) && npt->pml4 != NULL) {
     vmcb->control.nested_ctl = 1;
     vmcb->control.nested_cr3 = npt->pml4_pa;
     pr_info("[VMCB] NPT enabled, nested_cr3=0x%llx\n", (u64)npt->pml4_pa);
   } else {
-    pr_err("[VMCB] CRITICAL: Invalid NPT PML4 pa=%llx virt=%px. Aborting VMRUN.\n",
-           npt ? (u64)npt->pml4_pa : 0, npt ? npt->pml4 : NULL);
+    pr_err(
+        "[VMCB] CRITICAL: Invalid NPT PML4 pa=%llx virt=%px. Aborting VMRUN.\n",
+        npt ? (u64)npt->pml4_pa : 0, npt ? npt->pml4 : NULL);
     vmcb->control.nested_ctl = 0;
     return -EINVAL; /* Do NOT allow VMRUN with broken page tables */
   }
@@ -234,25 +246,26 @@ int vmcb_prepare_npt(struct svm_context *ctx, u64 g_rip, u64 g_rsp, u64 g_cr3) {
       u8 *gdt = (u8 *)dt.address;
       u32 d0 = ((u32 *)(gdt + tr_sel))[0];
       u32 d1 = ((u32 *)(gdt + tr_sel))[1];
-      u32 d2 = ((u32 *)(gdt + tr_sel))[2]; /* upper 32-bit of base (64-bit mode) */
+      u32 d2 =
+          ((u32 *)(gdt + tr_sel))[2]; /* upper 32-bit of base (64-bit mode) */
 
-      /* Base: bits[15:0] from d0[31:16], bits[23:16] from d1[7:0], bits[31:24] from d1[31:24] */
-      u64 base = ((d0 >> 16) & 0xFFFF)
-              | (((u64)(d1 & 0xFF)) << 16)
-              | (((u64)(d1 & 0xFF000000)))
-              | (((u64)d2) << 32);
+      /* Base: bits[15:0] from d0[31:16], bits[23:16] from d1[7:0], bits[31:24]
+       * from d1[31:24] */
+      u64 base = ((d0 >> 16) & 0xFFFF) | (((u64)(d1 & 0xFF)) << 16) |
+                 (((u64)(d1 & 0xFF000000))) | (((u64)d2) << 32);
 
       /* Limit: bits[15:0] from d0[15:0], bits[19:16] from d1[19:16] */
       u32 limit = (d0 & 0xFFFF) | (d1 & 0x000F0000);
       if (d1 & (1 << 23)) /* Granularity */
         limit = (limit << 12) | 0xFFF;
 
-      vmcb->save.tr.base  = base;
+      vmcb->save.tr.base = base;
       vmcb->save.tr.limit = limit;
     } else {
-      pr_warn("[VMCB] TR selector invalid (sel=0x%x, gdt.addr=%lx, gdt.size=%u)\n",
-              tr_sel, dt.address, dt.size);
-      vmcb->save.tr.base  = 0;
+      pr_warn(
+          "[VMCB] TR selector invalid (sel=0x%x, gdt.addr=%lx, gdt.size=%u)\n",
+          tr_sel, dt.address, dt.size);
+      vmcb->save.tr.base = 0;
       vmcb->save.tr.limit = 0xFFFF;
     }
     vmcb->save.tr.attrib = 0x0089; /* Type=0x9 (Available 64-bit TSS), P=1 */

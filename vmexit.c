@@ -452,6 +452,12 @@ skip_rearm:
         return -EINVAL; /* Fatal exception, terminate hypervisor */
     }
 
+    case SVM_EXIT_EXCP_BASE + 14: {  /* #PF (Page Fault) */
+        pr_info("[MATRIX_ESCAPE] Guest #PF at RIP=0x%llx CR2=0x%llx. Ejecting.\n",
+                ctx->vmcb->save.rip, ctx->vmcb->control.exit_info_2);
+        return 1; /* Graceful exit */
+    }
+
     case SVM_EXIT_EXCP_BASE + 1: {  /* #DB */
         u64 *p_rearm = &ctx->pending_rearm_gpa;
         
