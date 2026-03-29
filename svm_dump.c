@@ -24,7 +24,7 @@
 
 /* Forward declaration — full definition in ring_minus_one.h */
 struct snap_context;
-int  procfs_init(struct snap_context *snap);
+int procfs_init(struct snap_context *snap);
 void procfs_exit(struct snap_context *snap);
 #include <asm/page.h>
 #include <asm/svm.h>
@@ -96,9 +96,8 @@ static struct svm_snapshot_blob snapshot_blob = {NULL, 0};
 static inline bool svm_check_access(void) { return capable(CAP_SYS_ADMIN); }
 
 /* NPT functions implemented and exported by npt_walk.c. */
-extern int  npt_build_identity_map(struct npt_context *ctx, u64 phys_limit);
+extern int npt_build_identity_map(struct npt_context *ctx, u64 phys_limit);
 extern void npt_destroy(struct npt_context *ctx);
-
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  SNAPSHOT — Yardımcı Fonksiyonlar
@@ -669,9 +668,8 @@ static const struct proc_ops pops_s = {.proc_open = st_open,
                                        .proc_lseek = seq_lseek,
                                        .proc_release = single_release};
 
-int procfs_init(struct snap_context *snap)
-{
-  (void)snap;  /* snap_context handled externally; we use module globals */
+int procfs_init(struct snap_context *snap) {
+  (void)snap; /* snap_context handled externally; we use module globals */
 
   proc_dir = proc_mkdir(PROC_DIR, NULL);
   if (!proc_dir)
@@ -685,7 +683,6 @@ int procfs_init(struct snap_context *snap)
       !proc_create("full_dump", 0600, proc_dir, &pops_f) ||
       !proc_create("npt_mode", 0600, proc_dir, &pops_n) ||
       !proc_create("status", 0400, proc_dir, &pops_s)) {
-
     remove_proc_subtree(PROC_DIR, NULL);
     return -ENOMEM;
   }
@@ -693,8 +690,7 @@ int procfs_init(struct snap_context *snap)
   return 0;
 }
 
-void procfs_exit(struct snap_context *snap)
-{
+void procfs_exit(struct snap_context *snap) {
   struct task_struct *t = NULL;
 
   (void)snap;
