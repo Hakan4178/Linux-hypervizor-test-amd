@@ -7,6 +7,7 @@
  */
 
 #include "ring_minus_one.h"
+#include "npt_walk.h"
 #include <linux/atomic.h>
 #include <linux/compat.h>
 #include <linux/fs.h>
@@ -113,6 +114,13 @@ static long svm_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 				atomic_set(&matrix_active, 0);
 				return ret_loop;
 			}
+
+			/* 
+			 * KICKSTART: Mark the initial guest stack page as Read-Only.
+			 * This ensures a 'Dirty Page' event is generated immediately on the 
+			 * first stack write, verifying the NPT telemetry pipeline is alive.
+			 */
+			npt_set_page_ro(&g_svm->npt, uregs->sp & PAGE_MASK);
 
 			/* Mimarinin Cekirdegi: Kuantum Ayrilmasi (Fork-like behavior)
 			 * Gercek dunyada (Host) ioctl 0 dondururken,

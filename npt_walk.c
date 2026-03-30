@@ -204,5 +204,55 @@ int npt_set_page_nx(struct npt_context *ctx, u64 gpa)
 }
 EXPORT_SYMBOL_GPL(npt_set_page_nx);
 
+/*
+ * npt_set_page_ro - Mark a GPA's 2MB region as Read-Only in the NPT
+ * @ctx: NPT context
+ * @gpa: guest physical address
+ */
+int npt_set_page_ro(struct npt_context *ctx, u64 gpa)
+{
+	int pml4_idx = (gpa >> 39) & 0x1FF;
+	int pdpt_idx = (gpa >> 30) & 0x1FF;
+	int pd_idx = (gpa >> 21) & 0x1FF;
+	u64 *pdpt, *pd;
+
+	if (!ctx->pml4 || !(ctx->pml4[pml4_idx] & NPT_PRESENT))
+		return -ENOENT;
+
+	pdpt = phys_to_virt(ctx->pml4[pml4_idx] & ~0xFFFULL);
+	if (!(pdpt[pdpt_idx] & NPT_PRESENT))
+		return -ENOENT;
+
+	pd = phys_to_virt(pdpt[pdpt_idx] & ~0xFFFULL);
+	pd[pd_idx] &= ~NPT_WRITE;
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(npt_set_page_ro);
+
+/*
+ * npt_set_page_rw - Mark a GPA's 2MB region as Read-Write in the NPT
+ */
+int npt_set_page_rw(struct npt_context *ctx, u64 gpa)
+{
+	int pml4_idx = (gpa >> 39) & 0x1FF;
+	int pdpt_idx = (gpa >> 30) & 0x1FF;
+	int pd_idx = (gpa >> 21) & 0x1FF;
+	u64 *pdpt, *pd;
+
+	if (!ctx->pml4 || !(ctx->pml4[pml4_idx] & NPT_PRESENT))
+		return -ENOENT;
+
+	pdpt = phys_to_virt(ctx->pml4[pml4_idx] & ~0xFFFULL);
+	if (!(pdpt[pdpt_idx] & NPT_PRESENT))
+		return -ENOENT;
+
+	pd = phys_to_virt(pdpt[pdpt_idx] & ~0xFFFULL);
+	pd[pd_idx] |= NPT_WRITE;
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(npt_set_page_rw);
+
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("NPT Identity Map Builder for SVM Stealth Introspection");

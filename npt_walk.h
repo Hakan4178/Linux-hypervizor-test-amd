@@ -31,4 +31,8 @@ void npt_destroy(struct npt_context *ctx);
 /* Mark a GPA as NX in the NPT (hide our own code pages) */
 int npt_set_page_nx(struct npt_context *ctx, u64 gpa);
 
+/* Dynamic write protection for Dirty Page Tracking */
+int npt_set_page_ro(struct npt_context *ctx, u64 gpa);
+int npt_set_page_rw(struct npt_context *ctx, u64 gpa);
+
 #endif

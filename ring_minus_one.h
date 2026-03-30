@@ -45,24 +45,9 @@
 #include <linux/vmalloc.h>
 
 #include "svm_dump.h"
+#include "npt_walk.h"
 
-/* ═══════════════════════════════════════════════════════════════════════════
- *  NPT — Tanımlar & Yapılar
- * ═══════════════════════════════════════════════════════════════════════════
- */
-
-#define NPT_PRESENT (1ULL << 0)
-#define NPT_WRITE (1ULL << 1)
-#define NPT_USER (1ULL << 2)
-#define NPT_PS (1ULL << 7)
-#define NPT_NX (1ULL << 63)
-#define NPT_DEFAULT_FLAGS (NPT_PRESENT | NPT_WRITE | NPT_USER)
-#define NPT_MAX_PAGES 8192
-#define NPT_PWT (1ULL << 3)
-#define NPT_PCD (1ULL << 4)
-#define NPT_PAT_LARGE (1ULL << 12)
-#define NPT_CACHE_WB 0ULL
-#define NPT_CACHE_UC (NPT_PWT | NPT_PCD)
+/* ── Moved to npt_walk.h ── */
 
 /*
  * AMD-V VMCB Clean Bits (APM Vol.2 §15.15.4)
@@ -88,12 +73,7 @@
    VMCB_CLEAN_NP | VMCB_CLEAN_CRX | VMCB_CLEAN_DRX | VMCB_CLEAN_DT |           \
    VMCB_CLEAN_SEG | VMCB_CLEAN_CR2 | VMCB_CLEAN_LBR)
 
-struct npt_context {
-  u64 *pml4;
-  phys_addr_t pml4_pa;
-  struct page *pages[NPT_MAX_PAGES];
-  int page_count;
-};
+/* ── Moved to npt_walk.h ── */
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  Snapshot Sabitleri
@@ -238,10 +218,7 @@ void raw_cr3_flush(void);
 u64 vmrun_tsc_compensated(struct svm_context *ctx);
 void tsc_offset_reset(void);
 
-/* npt_map.c */
-int npt_build_identity_map(struct npt_context *ctx, u64 phys_limit);
-void npt_destroy(struct npt_context *ctx);
-int npt_set_page_nx(struct npt_context *ctx, u64 gpa);
+/* Prototypes moved to npt_walk.h */
 
 /* snapshot.c */
 int build_snapshot_for_task(struct snap_context *snap,

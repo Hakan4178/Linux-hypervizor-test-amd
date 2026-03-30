@@ -194,7 +194,16 @@ int vmcb_prepare_npt(struct svm_context *ctx, u64 g_rip, u64 g_rsp, u64 g_cr3)
 	vmcb->control.asid = 2;
 	vmcb->control.tlb_ctl = 0;
 
-	vmcb->control.virt_ext |= LBR_CTL_ENABLE_MASK; // LBR Bleed Koruması!
+	vmcb->control.virt_ext |= LBR_CTL_ENABLE_MASK; // LBR Virtualization (save/restore)
+
+	/*
+	 * Enable actual LBR recording in the guest.
+	 * LBRV alone only saves/restores LBR state on VMRUN/VMEXIT.
+	 * We must also set DBGCTL.LBR (bit 0) to start branch recording.
+	 * After VMEXIT, br_from/br_to in the VMCB save area will contain
+	 * the guest's last branch taken before the exit.
+	 */
+	vmcb->save.dbgctl = 1; /* LBR enable */
 
 	/* First VMRUN: clean=0 forces full load. Subsequent runs use STABLE. */
 	vmcb->control.clean = 0;

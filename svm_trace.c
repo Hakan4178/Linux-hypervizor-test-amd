@@ -131,7 +131,7 @@ static int ring_write_nofault(struct svm_trace_ring *r, u64 offset, const void *
  * can reverse if it needs chronological order, but capturing them in MSR order
  * ensures we never miss any entry regardless of how fast the guest runs.
  */
-void svm_trace_emit_lbr(u64 cr3, u64 rip)
+void svm_trace_emit_lbr(u64 cr3, u64 rip, u64 br_from, u64 br_to)
 {
 	struct svm_trace_entry hdr;
 	struct svm_lbr_pair lbr[AMD_LBR_STACK_DEPTH];
@@ -146,8 +146,8 @@ void svm_trace_emit_lbr(u64 cr3, u64 rip)
 	memset(lbr, 0, sizeof(lbr));
 
 	/* 
-	 * Telemetry Resilience: If LBRV is missing (e.g. nested VM), 
-	 * we still emit the header with RIP/CR3 so the user sees progress.
+	 * Telemetry Resilience: 
+	 * 1. Try to drain the full hardware LBR stack via MSRs if LBRV is active.
 	 */
 	if (boot_cpu_has(X86_FEATURE_LBRV)) {
 		for (i = 0; i < AMD_LBR_STACK_DEPTH; i++) {
@@ -157,6 +157,16 @@ void svm_trace_emit_lbr(u64 cr3, u64 rip)
 				break;
 			valid_count++;
 		}
+	}
+
+	/* 
+	 * 2. Fallback: If stack is empty but we have a valid VMCB branch, use it.
+	 * This ensures visibility even on hardware that only reports the last branch.
+	 */
+	if (valid_count == 0 && (br_from || br_to)) {
+		lbr[0].from = br_from;
+		lbr[0].to = br_to;
+		valid_count = 1;
 	}
 
 	hdr.magic = SVM_TRACE_MAGIC;
@@ -175,7 +185,8 @@ void svm_trace_emit_lbr(u64 cr3, u64 rip)
 	atomic64_add(sizeof(hdr), &svm_tring.commit_idx);
 	raw_spin_unlock_irqrestore(&trace_write_lock, flags);
 
-	pr_info_once("[SVM_TRACE] First telemetry record (Resilient) emitted to ring buffer.\n");
+	pr_info_once("[SVM_TRACE] First telemetry record (LBR Fallback: %s) emitted.\n",
+		     valid_count > 0 ? "YES" : "NO (RIP Only)");
 	wake_up_interruptible(&svm_trace_wq);
 }
 

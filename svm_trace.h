@@ -85,23 +85,8 @@ extern struct svm_trace_ring svm_tring;
 int svm_trace_init(void);
 void svm_trace_cleanup(void);
 
-/*
- * svm_trace_emit_lbr - Drain hardware LBR stack and emit one
- * TRACE_EVT_LBR_SAMPLE record.  Called from the periodic VMEXIT tick inside
- * vmexit.c.
- * @cr3:  guest CR3 at time of exit
- * @rip:  guest RIP at time of exit
- */
-void svm_trace_emit_lbr(u64 cr3, u64 rip);
-
-/*
- * svm_trace_emit_dirty - Record a 4KB dirty page caught by the NPT write-fault
- * handler.  Called while still inside the VMEXIT path (IRQs off/Guest stopped).
- * @cr3:     guest CR3
- * @rip:     faulting guest RIP
- * @fault_gpa: guest physical address of the faulting page (4KB aligned)
- * @hva:      kernel virtual address of the page to copy
- */
-void svm_trace_emit_dirty(u64 cr3, u64 rip, u64 fault_gpa, const void *hva);
+void svm_trace_emit_lbr(u64 cr3, u64 rip, u64 br_from, u64 br_to);
+void svm_trace_emit_dirty(u64 cr3, u64 rip, u64 gpa, const void *hva);
+void svm_trace_emit_rearm(u64 cr3, u64 rip);
 
 #endif /* _SVM_TRACE_H */

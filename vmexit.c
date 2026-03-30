@@ -476,6 +476,7 @@ int svm_run_guest(struct svm_context *ctx, struct guest_regs *regs)
 			}
 
 skip_rearm:
+			ctx->pending_rearm_gpa = gpa & PAGE_MASK;
 			ctx->vmcb->save.rflags |= RFLAGS_TF;
 			ctx->vmcb->control.intercepts[INTERCEPT_EXCEPTION_OFFSET >> 5] |=
 			    EXCEPT_DB_BIT;
@@ -634,7 +635,7 @@ skip_rearm:
 
 	/* ── Phase 2: LBR Chronological Drain ── */
 	pr_info_once("[VMEXIT] Telemetry drain reached (exit_code=0x%llx, ret=%d)\n", exit_code, ret);
-	svm_trace_emit_lbr(ctx->vmcb->save.cr3, ctx->vmcb->save.rip);
+	svm_trace_emit_lbr(ctx->vmcb->save.cr3, ctx->vmcb->save.rip, ctx->vmcb->save.br_from, ctx->vmcb->save.br_to);
 
 	/* ── TSC Compensation (runs with IRQs ENABLED — safe, pinned to CPU 0) ── */
 	{

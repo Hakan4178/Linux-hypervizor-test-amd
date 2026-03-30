@@ -154,11 +154,13 @@ def cmd_list(args):
 
 def calculate_entropy(data):
     if not data: return 0.0
+    # O(N) single-pass frequency count instead of O(256*N)
+    counts = collections.Counter(data)
     entropy = 0
-    for x in range(256):
-        p_x = data.count(x) / len(data)
-        if p_x > 0:
-            entropy += - p_x * math.log2(p_x)
+    total = len(data)
+    for count in counts.values():
+        p_x = count / total
+        entropy -= p_x * math.log2(p_x)
     return entropy
 
 def set_nonblocking(fd):
@@ -199,18 +201,40 @@ def trace_reader_proc(trace_file, q_out):
                     magic = struct.unpack("<Q", header_raw[:8])[0]
                     
                     if magic != MAGIC_EXPECTED:
-                        # Senkronizasyon kaybı! Bir sonraki byte'a geç
+                        # Senkronizasyon kaybı! Bir sonraki byte'a geç ve senkron ara.
                         del buf[0]
                         q_out.put(('DROP',))
                         continue
                         
-                    # 2. Header'ı tamamen aç
+                    # 2. Header'ı tamamen aç (ENTRY_FMT: <QQIIQQQII32Q)
                     unpacked = struct.unpack(ENTRY_FMT, header_raw)
-                    tsc, ev_type, lbr_count, cr3, rip, gpa, data_size = unpacked[1:8]
-                    lbr_data = unpacked[9:]
                     
-                    # 3. Payload var mı? (event_type == 2 ise data_size kadar veri beklenir)
-                    total_expected = ENTRY_SIZE + data_size
+                    tsc       = unpacked[1]
+                    ev_type   = unpacked[2]
+                    lbr_count = unpacked[3]
+                    cr3       = unpacked[4]
+                    rip       = unpacked[5]
+                    gpa       = unpacked[6]
+                    data_size = unpacked[7]
+                    # unpacked[8] is _pad
+                    lbr_raw   = unpacked[9:] # All 32 elements
+                    
+                    # 3. Senkronizasyon ve Boyut Kontrolü (Sanity Guard)
+                    if ev_type == 1: # LBR
+                        total_expected = ENTRY_SIZE
+                    elif ev_type == 2: # MUT (DIRTY PAGE)
+                        # Sanity: Sayfa verisi 4KB olmalı, ama esneklik için 16KB limit koyuyoruz.
+                        if data_size > 16384:
+                            # Tehlili paket veya senkron kaybı.
+                            del buf[0]
+                            q_out.put(('DROP',))
+                            continue
+                            
+                        total_expected = ENTRY_SIZE + data_size
+                    else:
+                        # Bilinmeyen event type. Senkronu bozmamak için sadece header'ı atla.
+                        total_expected = ENTRY_SIZE
+
                     if len(buf) < total_expected:
                         # Payload henüz gelmemiş, döngüden çıkıp daha fazla veri bekle
                         break
@@ -218,11 +242,15 @@ def trace_reader_proc(trace_file, q_out):
                     # 4. Veriyi işle
                     if ev_type == 1: # LBR
                         branches = []
-                        for i in range(lbr_count):
-                            frm, to = lbr_data[i*2], lbr_data[i*2 + 1]
+                        # Güvenlik: lbr_count max 16 çift (32 Q) olmalı
+                        safe_count = min(lbr_count, 16)
+                        for i in range(safe_count):
+                            frm, to = lbr_raw[i*2], lbr_raw[i*2 + 1]
                             if frm and to:
                                 branches.append((frm, to))
-                        q_out.put(('LBR', tsc, branches))
+                        
+                        # Resiliency: If no branches, send the RIP itself as a progress point
+                        q_out.put(('LBR', tsc, branches, rip))
                     
                     elif ev_type == 2: # DIRTY PAGE
                         payload = bytes(buf[ENTRY_SIZE:total_expected])
@@ -277,15 +305,20 @@ class LiveDashboard:
             if msg[0] == 'DROP':
                 self.stats["drops"] += 1
             elif msg[0] == 'LBR':
-                _, tsc, branches = msg
-                self.stats["lbr"] += len(branches)
-                for frm, to in branches:
-                    to_page = to & 0xFFFFFFFFFFFFF000
-                    is_dirty = to_page in self.dirty_pages
-                    self.recent_branches.append((frm, to, is_dirty))
-                    if self.log_file:
-                        dirty_str = " [DIRTY EXEC!]" if is_dirty else ""
-                        self.session_log.append(f"[LBR] TSC: {tsc} | 0x{frm:016x} -> 0x{to:016x}{dirty_str}")
+                _, tsc, branches, rip = msg
+                self.stats["lbr"] += max(1, len(branches))
+                
+                if not branches:
+                    # RIP point tracing
+                    self.recent_branches.append((rip, rip, False))
+                else:
+                    for frm, to in branches:
+                        to_page = to & 0xFFFFFFFFFFFFF000
+                        is_dirty = to_page in self.dirty_pages
+                        self.recent_branches.append((frm, to, is_dirty))
+                        if self.log_file:
+                            dirty_str = " [DIRTY EXEC!]" if is_dirty else ""
+                            self.session_log.append(f"[LBR] TSC: {tsc} | 0x{frm:016x} -> 0x{to:016x}{dirty_str}")
             elif msg[0] == 'MUT':
                 _, tsc, cr3, rip, gpa, data = msg
                 self.stats["dirty"] += 1
@@ -337,17 +370,30 @@ class LiveDashboard:
         
         self.stdscr.addstr(4, 2, "=== LBR MATRIX EXECUTION FLOW ===", curses.color_pair(2) | curses.A_BOLD)
         max_lbr_rows = h - 8
-        for i, branch in enumerate(list(self.recent_branches)[:max_lbr_rows]):
+        
+        # Akışın aşağı doğru akması için listeyi ters çeviriyoruz (en yeni en üstte)
+        recent_list = list(self.recent_branches)
+        recent_list.reverse()
+        
+        for i, branch in enumerate(recent_list[:max_lbr_rows]):
             frm, to, is_dirty = branch
+            row = 5 + i
+            
+            self.stdscr.addstr(row, 2, "├─ ", curses.A_DIM)
+            # From: Cyan, To: Yellow
+            self.stdscr.addstr(row, 5, f"0x{frm:012x}", curses.color_pair(1))
+            self.stdscr.addstr(row, 18, " -> ", curses.A_DIM)
+            self.stdscr.addstr(row, 22, f"0x{to:012x}", curses.color_pair(2))
+            
             if is_dirty:
-                self.stdscr.addstr(5 + i, 4, f"├─ 0x{frm:012x} -> 0x{to:012x} [MATRIX EXECUTE] (Page: DIRTY)", curses.color_pair(5) | curses.A_BOLD)
-            else:
-                self.stdscr.addstr(5 + i, 4, f"├─ 0x{frm:012x} -> 0x{to:012x}")
+                self.stdscr.addstr(row, 36, " [MATRIX EXECUTE] (DIRTY)", curses.color_pair(5) | curses.A_BOLD)
+            elif frm == to:
+                self.stdscr.addstr(row, 36, " [EXEC POINT]", curses.color_pair(3) | curses.A_DIM)
             
         self.stdscr.addstr(4, mid_x, "=== NPF DIRTY PAGES (ASM CACHE) ===", curses.color_pair(2) | curses.A_BOLD)
         max_mut_rows = h - 8
         for i, mut in enumerate(list(self.recent_mutations)[:max_mut_rows]):
-            prefix = "[!!!] HIGH ENT" if mut['ent'] > 7.5 else "[*] DECRYPTED "
+            prefix = "[!!!] HIGH ENT " if mut['ent'] > 7.5 else "[*] PAGE WRITE "
             cp = curses.color_pair(4) | curses.A_BOLD if mut['ent'] > 7.5 else curses.color_pair(3)
             line = f"{prefix} GPA: {mut['gpa']:012x} | {mut['asm']}"
             self.stdscr.addstr(5 + i, mid_x + 2, line[:w - mid_x - 3], cp)
@@ -394,9 +440,12 @@ def cmd_live_curses(args):
         print("\n[*] Live Dashboard başarıyla kapatıldı.")
         if dashboard and dashboard.log_file and dashboard.session_log:
             print(f"[*] Tam kronolojik rapor {dashboard.log_file} dosyasına yazılıyor...")
-            with open(dashboard.log_file, "w", encoding="utf-8") as lf:
-                lf.write("\n".join(dashboard.session_log))
-            print(f"[+] Toplam {len(dashboard.session_log)} kayıt {dashboard.log_file} dosyasına kaydedildi!")
+            try:
+                with open(dashboard.log_file, "w", encoding="utf-8") as lf:
+                    lf.write("\n".join(dashboard.session_log))
+                print(f"[+] Toplam {len(dashboard.session_log)} kayıt {dashboard.log_file} dosyasına kaydedildi!")
+            except Exception as le:
+                print(f"[!] Log yazma hatası: {le}")
             
     except Exception as e:
         print(f"\n[!] HATA: {e}")
