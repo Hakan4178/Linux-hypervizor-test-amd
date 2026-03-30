@@ -2,7 +2,7 @@
 
 Devlog: Yaşasın Triple fault çözüldü yarı stabil modül yüklendi. Python tarafında analiz ve gizlilik eksikliği var.
 
-Kapatılan açık sayısı:126 (Bugün karmaşık 7 zincirli komut ile root alma açığı kapatıldı.)
+Kapatılan açık sayısı:134
 
 Barmetal is a Ring-1 (Hypervisor) level Virtual Machine Introspection (VMI) research engine designed for AMD processors. It operates below the standard operating system layer by utilizing AMD SVM (Secure Virtual Machine) hardware extensions.
 
