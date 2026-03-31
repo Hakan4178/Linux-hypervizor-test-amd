@@ -72,9 +72,13 @@ all:
 	$(MAKE) -C $(KDIR) M=$(PWD) modules
 	@echo "[*] Stripping debug symbols for maximum Stealth and L1 Cache fit..."
 	@strip --strip-unneeded ring_minus_one.ko
+	@echo "[*] Compiling User-Space Tools..."
+	@gcc -shared -fPIC -nostdlib matrix_hook.c -o matrix_hook.so
+	@gcc svm_run.c -o svm_run
 
 clean:
 	$(MAKE) -C $(KDIR) M=$(PWD) clean
+	@rm -f matrix_hook.so svm_run
 
 # Sparse static analysis (C=1 for changed files, C=2 for all files)
 sparse:

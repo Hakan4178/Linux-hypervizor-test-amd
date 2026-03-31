@@ -18,7 +18,7 @@ int main(int argc, char **argv) {
     char hook_path[PATH_MAX];
     // Matrix hook modulu, bu aracla ayni dizindeki 'matrix_hook.so' olarak beklenmektedir.
     // Ancak guvenli olmasi acisindan tam yolunu (Absolute Path) aliyoruz:
-    if (realpath("tools/matrix_hook.so", hook_path) == NULL && realpath("./matrix_hook.so", hook_path) == NULL) {
+    if (realpath("./matrix_hook.so", hook_path) == NULL) {
         printf("\033[31m[!] HATA: matrix_hook.so bulunamadi. (Makefile compile ettiniz mi?)\033[0m\n");
         return 1;
     }
