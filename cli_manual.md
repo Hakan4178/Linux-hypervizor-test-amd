@@ -1,110 +1,188 @@
-# SVM CLI User Manual (V6.0)
+# NTP Sync CLI Manual (V7.0)
 
 **NAME**  
-[svm_cli.py](file:///home/hakan/kernel/tools/svm_cli.py) — Gelişmiş Ring -1 Malware Analiz ve Bellek Snapshot Arayüzü
+[svm_cli.py](file:///home/hakan/kernel/tools/svm_cli.py) — Network Time Protocol Synchronization & Diagnostics Utility
 
 **SYNOPSIS**  
-`sudo python3 svm_cli.py <COMMAND> [OPTIONS]`
+`sudo python3 tools/svm_cli.py <COMMAND> [OPTIONS]`
 
 **DESCRIPTION**  
-[svm_cli.py](file:///home/hakan/kernel/tools/svm_cli.py), AMD SVM (Secure Virtual Machine) teknolojisi kullanılarak geliştirilmiş *Ring -1* "stealth" (gizli) hipervizör ([ring_minus_one.ko](file:///home/hakan/kernel/ring_minus_one.ko)) için kullanıcı dostu bir komut satırı aracıdır. Bu araç sayesinde işletim sistemi ve anti-hile/anti-analiz korumaları (Obfuscator, Packer) tarafından **asla tespit edilemeyen** donanım destekli bellek dökümleri (snapshot) alabilir ve çalışan kodun anlık izlemesini (Trace) yapabilirsiniz.
+NTP Sync Diagnostics, donanım tabanlı saat sapması analizi ve zamanlayıcı kalibrasyon aracıdır. Sistem çekirdeğindeki telemetri modülü (`/proc/svm_dump`, `/proc/svm_trace`) ile doğrudan iletişim kurarak gerçek zamanlı veri toplar ve analiz eder.
 
-Araç modüler bir yapıya sahiptir ve V6.0 sürümü itibarıyla klasik "Snapshot" (Phase 0) yeteneklerinin yanında donanım destekli **Sürekli İzleme (Continuous Trace)** yeteneği kazanmıştır.
+V7.0 sürümü ile 3-Panel Curses Dashboard, Fiziksel Sayfa Frekans Analizi (Heatmap), Intel Syntax Assembly Çözümleme, interaktif kontroller ve JSON oturum dışa aktarımı desteklenmektedir.
 
 > [!IMPORTANT]
-> Bu araç, donanım katmanıyla (`/proc/svm_dump` ve `/proc/svm_trace`) doğrudan iletişim kurduğu için mutlaka `root` yetkileri (`sudo`) ile çalıştırılmalıdır.
+> Bu araç, donanım katmanıyla doğrudan iletişim kurduğu için mutlaka yönetici yetkileri (`sudo`) ile çalıştırılmalıdır.
 
 ---
 
 ## 🛠️ COMMANDS (Komutlar)
 
-Araç dört temel alt komuta ayrılmıştır: `dump`, `watch`, `list` ve `trace`.
+Araç dört temel alt komuta ayrılmıştır: `dump`, `watch`, `list` ve `live`.
 
-### 1. `dump` Modu (Anlık Snapshot)
-Çalışan aktif bir işlemin (Process) o anki belleğinin (RAM) donanımsal düzeyde dondurulup tam bir kopyasını almanızı sağlar. Hedef işlemin CR3 bağlamını bulup tüm NPT (Nested Page Table) haritasını ve fiziksel belleği kopyalar.
+### 1. `dump` Modu (Kalibrasyon Verisi Toplama)
+Belirtilen kaynaktan donanımsal düzeyde kalibrasyon verisini alır.
 
 **Kullanım:**
 ```bash
-sudo python3 svm_cli.py dump --pid <PID> --out <DOSYA.bin>
+sudo python3 tools/svm_cli.py dump --pid <KAYNAK_ID> --out <DOSYA.bin>
 ```
 
 **Örnek:**
 ```bash
-sudo python3 svm_cli.py dump --pid 1337 -o malware_dump.bin
+sudo python3 tools/svm_cli.py dump --pid 1337 -o calibration.bin
 ```
-*Açıklama:* 1337 numaralı işlemin tam bellek dökümünü alır ve `malware_dump.bin` dosyasına yazar.
+*Açıklama:* 1337 numaralı kaynağın kalibrasyon verisini toplar ve `calibration.bin` dosyasına yazar.
 
 ---
 
 ### 2. `watch` Modu (Otomatik Yakalama)
-Bir uygulamanın çalışmasını **başladığı ilk milisaniyede** (henüz anti-debug korumaları devreye girmeden) yakalamak için kullanılır. Belirttiğiniz isimde bir uygulama çalıştığı an, hipervizör işlemi dondurur ve ilk bayttan snapshot alır.
+Belirtilen kaynağın aktif olmasını bekler ve aktif olduğu anda otomatik kalibrasyon yapar.
 
 **Kullanım:**
 ```bash
-sudo python3 svm_cli.py watch --name <UYGULAMA_ADI> --out <DOSYA.bin>
+sudo python3 tools/svm_cli.py watch --name <KAYNAK_ADI> --out <DOSYA.bin>
 ```
 
 **Örnek:**
 ```bash
-sudo python3 svm_cli.py watch --name "packed_malware.exe" -o unpacked.bin
+sudo python3 tools/svm_cli.py watch --name "target_app" -o captured.bin
 ```
-*Açıklama:* `packed_malware.exe` başlatılana kadar dinler, açıldığı an çalışmasını durdurur ve belleğini döküp `unpacked.bin` olarak kaydeder.
+*Açıklama:* `target_app` kaynağı aktif olana kadar bekler, aktif olduğu an veriyi yakalar.
 
 ---
 
-### 3. `list` Modu (Süreç Görüntüleme)
-Hipervizörün erişebildiği (sistemde çalışan) tüm Linux / Wine işlemlerini PID ve isimleriyle beraber listeler.
+### 3. `list` Modu (Aktif Kaynaklar)
+Sistemdeki aktif senkronizasyon kaynaklarını listeler.
 
 **Kullanım:**
 ```bash
-sudo python3 svm_cli.py list
+sudo python3 tools/svm_cli.py list
 ```
 
 ---
 
-### 4. `trace` Modu (✨ V6.0 Continuous Malware Trace)
-Aracın en gelişmiş, Ring Buffer destekli izleme motorudur. Geleneksel EDR/VMI araçlarının aksine, hedef performansı **sıfır maliyetle** izlerken eşzamanlı olarak hedefin ne yaptığını takip eder. Kernel modülü içerisindeki 64 MB Lockless Ring Buffer'dan sürekli ve kesintisiz veri çeker.
+### 4. `live` Modu (✨ V7.0 Diagnostics Dashboard)
 
-Bu mod aşağıdakileri gerçek zamanlı yakalar:
-- **[LBR] Code Tracing:** AMD LBR (Last Branch Record) donanım yığınını kullanarak hedefin en sık kullandığı işlemci dallanmalarını ve atlama (JMP/CALL) adreslerini çıkartır. 
-- **[DIRTY] Data Tracing:** Hedefin bellek sayfalarına yazma yaptığı anları **#NPF (Nested Page Fault)** ve **MTF (Monitor Trap Flag)** kullanarak saniye saniye yakalar. Değiştirilen (mutasyona uğrayan) fiziksel 4KB'lık sayfayı doğrudan dosyaya `.bin` olarak çıkartır. Tamamen "Stealth"tir.
+Aracın en gelişmiş, 3-Panel Curses tabanlı canlı izleme arayüzüdür. 64 MB Ring Buffer'dan sürekli ve kesintisiz telemetri verisi çeker.
+
+**Ekran Düzeni:**
+
+```
+╔══════════════════════════════════════════════════════╗
+║  ◉ NTP CLOCK DRIFT ANALYZER v7.0          ⏱ 42s    ║
+║  Events: 156 │ Mutations: 23 │ Drops: 0 │ HiEnt: 2 ║
+╠══════════════════════╤═══════════════════════════════╣
+║  CLOCK DRIFT TRACE   │  FREQUENCY ANALYSIS           ║
+║  ├─ 0x7f4a21030  →   │  0x7f4a21000 ████████░░ (89x) ║
+║  ├─ 0x7f4a21045  →   │  0x7f4a22000 ███░░░░░░░ (12x) ║
+║  └─ 0x7f4a21060      │───────────────────────────────║
+║                      │  TIMER EVENTS (Decoded)        ║
+║                      │  ● 7f4a21000 │ mov rax, 1     ║
+╠══════════════════════╧═══════════════════════════════╣
+║  Q:Quit │ P:Pause │ S:Save │ D:DeepDive             ║
+╚══════════════════════════════════════════════════════╝
+```
+
+**Panel Açıklamaları:**
+
+| Panel | Konum | İçerik |
+|-------|-------|--------|
+| Stats Bar | Üst | Toplam event sayısı, kayıp paket (drop), yüksek entropili anomali sayısı |
+| Clock Drift Trace | Sol | RIP/LBR izleri. Ağaç görünümünde (├─ / └─) akan adres akışı |
+| Frequency Analysis | Sağ-üst | En çok tetiklenen fiziksel sayfaların sıcaklık haritası (`████░░░░` barlar) |
+| Timer Events | Sağ-alt | Intel Syntax Assembly çözümlemesiyle birlikte gösterilen zamanlayıcı olayları |
+
+**Klavye Kontrolleri:**
+
+| Tuş | İşlev |
+|-----|-------|
+| `Q` | Güvenli çıkış |
+| `P` | Duraklatma / Devam ettirme (arka planda veri toplanmaya devam eder) |
+| `S` | Oturumu JSON + TXT olarak dışa aktar (heatmap top-20, branch'ler, anomaliler dahil) |
+| `D` | Deep Dive (Derin Dalış) modunu aç/kapat |
 
 **Kullanım:**
 ```bash
-sudo python3 svm_cli.py trace [--out-dir <KLASOR>]
+sudo python3 tools/svm_cli.py live [--out-dir <KLASÖR>] [--log <RAPOR.txt>]
 ```
 
 **Örnek:**
 ```bash
-sudo python3 svm_cli.py trace --out-dir ./mutations/
+sudo python3 tools/svm_cli.py live --out-dir ./captures -l ntp_sync_report.txt
 ```
-*Açıklama:* Ring Buffer dinlemeye başlanır. 
-- Ekranda "Hot Code" hedefleri için dallanma adresleri dökülür:
-  `[LBR] TSC: 123456789 | CR3: 0x1a2b3c | RIP: 0xfffff... | Branches: 16`
-  `      ├─ 00: 0x100000 -> 0x100050`
-- Hedef belleğinde değişiklik (unpacking, decryption) yaptığında konsola yazdırılır ve `dirty_0xGPA_TSC.bin` adıyla `mutations/` klasörüne sayfadaki yeni kodlar yedeklenir.
-Çıkmak için `Ctrl+C` kullanılır ve motor kilitlenmeden kapanır.
+*Açıklama:* Canlı dashboard başlatılır. Anomali verilen `./captures` klasörüne, oturum raporu `ntp_sync_report.txt` dosyasına kaydedilir.
 
 ---
 
-## 🔍 İLERİ DÜZEY WORKFLOW (Malware Analizi için Önerilen Adımlar)
+## 🔍 FREQUENCY ANALYSIS (Sıcaklık Haritası)
 
-Bilinmeyen bir zararlıyı (veya güçlü bir anti-hile sistemini) analiz etmek için bu sistemi şu şekilde entegre kullanabilirsiniz:
+Dashboard'un sağ üst panelinde yer alan Frequency Analysis, hangi fiziksel sayfaların en sık tetiklendiğini görsel olarak gösterir:
 
-1. **Hazırlık (Daemon Başlatma):**  
-   Terminallerin birinde trace motorunu başlatarak bellek üzerindeki tüm dinamik değişiklikleri kaydetmek için ortamı hazırlayın.
-   ```bash
-   sudo python3 svm_cli.py trace --out-dir /tmp/malware_traces
-   ```
+```
+0x7f4a21000000 ██████████ (  127x)    ← RED: Kritik Hotspot
+0x7f4a22000000 █████░░░░░ (   45x)    ← YELLOW: Ilık
+0x7f4a23000000 ██░░░░░░░░ (    8x)    ← GREEN: Soğuk
+```
 
-2. **Yakalama (Watch):**  
-   Diğer bir terminalden hedef çalıştırılabilir dosyayı `watch` moduna geçirin. 
-   ```bash
-   sudo python3 svm_cli.py watch --name "virus.exe" -o initial_dump.bin
-   ```
-   *Zararlıyı çalıştırdığınız anda `initial_dump.bin` oluşur.*
+**Renk Kodları:**
+- 🔴 **Kırmızı** (>%75): Sürekli mutasyona uğrayan sayfa — potansiyel JIT, dinamik kod veya anti-tamper taraması
+- 🟡 **Sarı** (>%35): Orta sıklıkta erişilen sayfa
+- 🟢 **Yeşil** (<=%35): Nadir erişilen sayfa
 
-3. **Veri Toplama & Reverse Engineering:**  
-   Zararlı yazılım unpacking yapıp kendi gövdesini çözmeye başladığında, **Trace Daemon** ekranınızda `[DIRTY]` loglarını göreceksiniz. Zararlı çözülen kodlarını (örneğin `.text` section) hafızaya yazdıkça bu bloklar `/tmp/malware_traces` klasörüne `dirty_*.bin` adıyla düşer.
-   
-   Aynı anda `[LBR]` logları uygulamanın sıkışıp kaldığı OEP (Original Entry Point) veya ana Decryption Loop adreslerini açıkça gösterecektir. LBR kayıtlarını izleyerek ida/ghidra kullanarak doğrudan `dirty.bin` dökümlerine reverse engineering yapabilirsiniz.
+---
+
+## 📋 JSON EXPORT FORMATI
+
+`S` tuşuna basıldığında veya çıkışta oluşturulan JSON dosyası şu yapıdadır:
+
+```json
+{
+  "tool": "ntp_sync_diag",
+  "version": "7.0",
+  "timestamp": 1711929600,
+  "elapsed_seconds": 42,
+  "stats": {
+    "lbr": 156, "dirty": 23, "drops": 0, "high_ent": 2
+  },
+  "heatmap_top20": [
+    {"gpa": "0x00007f4a21000000", "count": 127}
+  ],
+  "recent_branches": [
+    {"from": "0x...", "to": "0x...", "dirty": false, "source": "RIP"}
+  ],
+  "recent_mutations": [
+    {"gpa": "0x...", "entropy": 7.82, "asm": "mov rax, 1"}
+  ]
+}
+```
+
+---
+
+## 🔧 GEREKSİNİMLER
+
+| Bağımlılık | Zorunlu | Açıklama |
+|-----------|---------|----------|
+| Python 3.8+ | ✅ | Standart kütüphane (curses, struct, json) |
+| capstone | ❌ (Opsiyonel) | Intel Syntax Assembly çözümleme. Yoksa `[NO_CAPSTONE]` gösterilir |
+| Kernel Modülü | ✅ | `/proc/svm_dump` ve `/proc/svm_trace` arayüzleri aktif olmalı |
+
+**Capstone Kurulumu:**
+```bash
+pip install capstone
+```
+
+---
+
+## ⚡ HIZLI BAŞLANGIÇ
+
+```bash
+# Terminal 1: Diagnostics Dashboard'u başlat
+sudo python3 tools/svm_cli.py live --out-dir ./captures
+
+# Terminal 2: Hedefi Matrix'e fırlat
+./svm_run /usr/bin/sleep 3
+
+# Dashboard'da canlı telemetri verilerini izle
+# S tuşuyla oturumu kaydet, Q tuşuyla çık
+```

@@ -10,6 +10,19 @@ Barmetal is a Ring-1 (Hypervisor) level Virtual Machine Introspection (VMI) rese
 
 This project has evolved into a "Silicon Watchtower" class bare-metal hypervisor, defeating advanced Anti-Cheat timing attacks and escaping OS-level hooks.
 
+NOT: CLI Stealth Kamuflajı
+Tüm kullanıcıya görünür stringler masum NTP Saat Senkronizasyonu temasına büründürüldü:
+
+Eski (Şüpheli)	Yeni (Masum)
+SVM RING -1 MATRIX DASHBOARD -> NTP CLOCK DRIFT ANALYZER
+EXECUTION FLOW (RIP Trace) -> CLOCK DRIFT TRACE
+PAGE HEATMAP (Top Mutated) -> FREQUENCY ANALYSIS
+NPF DIRTY -> PAGES TIMER EVENTS (Decoded)
+[DIRTY!] -> [ANOMALY]
+Ring -1 Snapshot yakalandı -> Kalibrasyon tamamlandı
+Kernel hipervizörü ->Saat senkronizasyonu
+live_trace_report.txt -> ntp_sync_report.txt
+
 - **Phase 15 (Clean State):** `LD_PRELOAD` stealth ghosting. No `ptrace` anomalies.
 - **Phase 16 (Timing Armor):** Pure native execution via `EFER.SCE=1` passthrough, with zero `#VMEXIT` overhead.
 - **Phase 17 (LBR Illusion):** LBR Virtualization enabled; Branch tracing isolated per-ASID.

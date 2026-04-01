@@ -1,10 +1,12 @@
 # Build artıkları
 *.o
+*.o.bak
 *.bak
-*.i64
+*.o.i64
 *.o.cmd
 *.bin
 *.ko
+*.out
 *.cmd
 *.mod
 *.mod.c
