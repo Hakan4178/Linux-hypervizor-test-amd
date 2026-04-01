@@ -12,6 +12,7 @@
 
 #include "ring_minus_one.h"
 #include "svm_trace.h"
+#include "svm_decode.h"
 #include <linux/delay.h>
 #include <linux/kallsyms.h>
 #include <linux/sched/signal.h>
@@ -101,6 +102,54 @@ static inline u64 tsc_jitter(u64 min, u64 max)
  *  All other leaves: native pass-through via host cpuid
  * ═══════════════════════════════════════════════════════════════════════════
  */
+
+/*
+ * Securely translate a Guest Physical Address (GPA) to a Host Physical 
+ * Address (HPA) by walking the NPT map.
+ */
+static u64 npt_get_hpa(struct npt_context *ctx, u64 gpa)
+{
+	u64 *pml4 = ctx->pml4;
+	int pml4i = (gpa >> 39) & 0x1FF;
+	int pdpti = (gpa >> 30) & 0x1FF;
+	int pdi   = (gpa >> 21) & 0x1FF;
+	u64 pdpt_phys, *pdpt, pd_phys, *pd, pde, hpa_base;
+
+	if (!pml4) return 0;
+	
+	/* 1. PML4 -> PDPT */
+	if (!(pml4[pml4i] & 1)) return 0; /* Present bit check */
+	pdpt_phys = pml4[pml4i] & 0x000FFFFFFFFFF000ULL; /* NX (bit 63) ve reserved bit mask */
+	if (!pdpt_phys || !pfn_valid(pdpt_phys >> PAGE_SHIFT)) return 0;
+	pdpt = (u64 *)phys_to_virt(pdpt_phys); /* Pointer cast aritmetiği koruması */
+
+	/* 2. PDPT -> PD */
+	if (!(pdpt[pdpti] & 1)) return 0;
+	pd_phys = pdpt[pdpti] & 0x000FFFFFFFFFF000ULL;
+	if (!pd_phys || !pfn_valid(pd_phys >> PAGE_SHIFT)) return 0;
+	pd = (u64 *)phys_to_virt(pd_phys);
+
+	/* 3. PD -> PTE veya 2MB Page */
+	pde = pd[pdi];
+	if (!(pde & 1)) return 0; /* Present bit = 0 (sayfa NPT'de yok) */
+
+	/* Active SVM Identity Map currently uses exclusively 2MB pages */
+	if (pde & (1ULL << 7)) { /* PSE (Page Size Extension) for 2MB pages */
+		hpa_base = pde & 0x000FFFFFFFFE0000ULL; /* 2MB base mask (Bits 51:21) */
+		return hpa_base | (gpa & ((2ULL << 20) - 1)); /* Kalan 21 bit offset */
+	} else {
+		/* Fallback for 4KB pages in case the identity map gets rebuilt with them */
+		int pti = (gpa >> 12) & 0x1FF;
+		u64 pt_phys = pde & 0x000FFFFFFFFFF000ULL;
+		u64 *pt, pte;
+		
+		if (!pt_phys || !pfn_valid(pt_phys >> PAGE_SHIFT)) return 0;
+		pt = (u64 *)phys_to_virt(pt_phys);
+		pte = pt[pti];
+		if (!(pte & 1)) return 0;
+		return (pte & 0x000FFFFFFFFFF000ULL) | (gpa & 0xFFF); /* 4KB offset */
+	}
+}
 
 static void handle_cpuid(struct vmcb *vmcb, struct guest_regs *regs)
 {
@@ -537,7 +586,63 @@ int svm_run_guest(struct svm_context *ctx, struct guest_regs *regs)
 						     ctx->vmcb->save.rip,
 						     gpa & PAGE_MASK, hva);
 
-				/* NPT'den geçici olarak NX'i kaldır (execute izni ver) */
+				/*
+				 * Phase 21: Instruction Decoder (Split-View)
+				 * Before lifting NX and exposing the page, try to decode and emulate 
+				 * register-only instructions natively from host memory.
+				 *
+				 * SAFARI / BOUNDARY CHECK: gpa is Guest Physical, we must precisely 
+				 * map it to Host Physical, and handle cross-page instruction fetches.
+				 */
+				{
+					u8 insn_buf[15] = {0};
+					u64 hpa1 = npt_get_hpa(&ctx->npt, gpa);
+
+					if (hpa1 && pfn_valid(hpa1 >> PAGE_SHIFT)) {
+						void *hva1 = phys_to_virt(hpa1);
+						size_t bytes_in_page = PAGE_SIZE - (hpa1 & ~PAGE_MASK);
+						size_t read_len1 = (bytes_in_page < 15) ? bytes_in_page : 15;
+
+						memcpy(insn_buf, hva1, read_len1);
+
+						/* Handle instructions crossing a physical page boundary safely */
+						if (read_len1 < 15) {
+							u64 gpa2 = gpa + read_len1;
+							u64 hpa2 = npt_get_hpa(&ctx->npt, gpa2);
+							
+							if (hpa2 && pfn_valid(hpa2 >> PAGE_SHIFT)) {
+								void *hva2 = phys_to_virt(hpa2);
+								memcpy(insn_buf + read_len1, hva2, 15 - read_len1);
+							}
+						}
+
+						/* Attempt hypervisor-level emulation */
+						u32 decode_result = svm_decode_insn(insn_buf, &ctx->gregs, &ctx->vmcb->save);
+						u32 insn_len = decode_result & DECODE_LEN_MASK;
+
+						if ((decode_result & DECODE_ACTION_EMULATED) && insn_len > 0) {
+							/* Successfully emulated register operation! No NX lift needed. */
+							if (!(decode_result & DECODE_ACTION_BRANCH))
+								ctx->vmcb->save.rip += insn_len;
+
+							/* Telemetry trace (0, 0 since it's just sequential emulation unless branch) */
+							svm_trace_emit_lbr(ctx->vmcb->save.cr3, ctx->vmcb->save.rip, 0, 0);
+
+							/* Enforce TSC Compensation / Drift Control before seamless resume */
+							u64 npf_exit_tsc = rdtsc();
+							u64 hv_delta = npf_exit_tsc - npf_entry_tsc;
+							if (hv_delta > TSC_COMP_MAX_DELTA)
+								hv_delta = TSC_COMP_MAX_DELTA;
+							
+							ctx->vmcb->control.tsc_offset -= hv_delta;
+							ctx->vmcb->control.clean &= ~VMCB_CLEAN_TSC;
+
+							break; /* Resume guest transparently */
+						}
+					}
+				}
+
+				/* NPT'den geçici olarak NX'i kaldır (execute izni ver) - Fallback */
 				{
 					u64 *pml4 = ctx->npt.pml4;
 					int pml4i = (gpa >> 39) & 0x1FF;
@@ -574,6 +679,7 @@ int svm_run_guest(struct svm_context *ctx, struct guest_regs *regs)
 
 skip_nx_rearm:
 				ctx->pending_rearm_gpa = gpa & PAGE_MASK;
+				ctx->pending_rearm_nx = 1; /* Instruct #DB handler to lift EXACTLY NX */
 				ctx->vmcb->save.rflags |= RFLAGS_TF;
 				ctx->vmcb->control.intercepts[INTERCEPT_EXCEPTION_OFFSET >> 5] |=
 				    EXCEPT_DB_BIT;
@@ -639,6 +745,7 @@ skip_nx_rearm:
 
 skip_rearm:
 			ctx->pending_rearm_gpa = gpa & PAGE_MASK;
+			ctx->pending_rearm_nx = 0; /* Instruct #DB handler to restore NPT_WRITE, not NPT_NX */
 			ctx->vmcb->save.rflags |= RFLAGS_TF;
 			ctx->vmcb->control.intercepts[INTERCEPT_EXCEPTION_OFFSET >> 5] |=
 			    EXCEPT_DB_BIT;
@@ -815,7 +922,13 @@ skip_rearm:
 					if (pd_phys && pfn_valid(pd_phys >> PAGE_SHIFT)) {
 						u64 *pd = phys_to_virt(pd_phys);
 
-						pd[pdi] &= ~NPT_WRITE;
+						/* Phase 21: Correctly re-arm NX or Write based on fault type */
+						if (ctx->pending_rearm_nx) {
+							pd[pdi] |= NPT_NX;     /* Execute korumasını geri koy */
+							ctx->pending_rearm_nx = 0;
+						} else {
+							pd[pdi] &= ~NPT_WRITE; /* Write korumasını geri koy */
+						}
 					}
 				}
 			}

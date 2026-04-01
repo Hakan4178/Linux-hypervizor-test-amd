@@ -168,6 +168,7 @@ struct svm_context {
   struct npt_context npt;
 
   u64 pending_rearm_gpa;
+  u8  pending_rearm_nx;   /* 1 = NX rearm (execute fault), 0 = Write rearm */
   u32 kernel_pf_count;  /* Ping-Pong Guard: ardışık kernel #PF sayacı */
   u64 last_npf_gpa;     /* NPF Loop Kill Switch: fault GPA */
   u32 npf_loop_count;   /* NPF Loop Kill Switch: fault count */
