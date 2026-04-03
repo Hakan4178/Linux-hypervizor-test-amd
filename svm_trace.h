@@ -88,6 +88,7 @@ void svm_trace_cleanup(void);
 void svm_trace_emit_lbr(u64 cr3, u64 rip, u64 br_from, u64 br_to,
 			const u8 *insn_buf, u32 insn_len);
 void svm_trace_emit_dirty(u64 cr3, u64 rip, u64 gpa, const void *hva);
+void svm_trace_flush_batch(void);
 void svm_trace_emit_rearm(u64 cr3, u64 rip);
 
 #endif /* _SVM_TRACE_H */

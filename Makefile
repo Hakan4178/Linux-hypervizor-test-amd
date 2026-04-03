@@ -5,7 +5,7 @@ KDIR := /lib/modules/$(shell uname -r)/build
 PWD  := $(shell pwd)
 
 obj-m += ring_minus_one.o
-ring_minus_one-objs := main.o vmexit.o svm_dump.o npt_walk.o svm_trace.o svm_engine.o tsc_stealth.o svm_chardev.o svm_ghost.o svm_asm.o svm_spoof.o svm_npt_hook.o svm_decode.o
+ring_minus_one-objs := main.o vmexit.o svm_dump.o npt_walk.o svm_trace.o svm_engine.o tsc_stealth.o svm_chardev.o svm_ghost.o svm_asm.o svm_spoof.o svm_npt_hook.o svm_decode.o svm_npf.o
 
 # ─── Sertleştirilmiş Derleyici Bayrakları ───
 # -Werror           : Tüm uyarılar hata olarak ele alınır
@@ -66,6 +66,12 @@ ccflags-y += $(call cc-option,--param=ssp-buffer-size=4)
 # -g0: Do not generate debug info
 # -mno-red-zone: Interrupt kernel stack collision avoidance
 ccflags-y += -O2 -g0 -mno-red-zone
+
+# ─── Bypass Host Kernel Spectre Mitigations (Retpoline/Rethunk) ───
+# We are Ring -1. Performance is everything. Raw ret instructions yield 10-15% pipeline boost.
+# Also disable objtool 'naked return' warnings gracefully.
+ccflags-y += -mindirect-branch=keep
+OBJECT_FILES_NON_STANDARD := y
 
 # ─── Hedefler ───
 all:

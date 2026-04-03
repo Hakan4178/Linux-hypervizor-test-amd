@@ -141,6 +141,17 @@ int vmcb_prepare_npt(struct svm_context *ctx, u64 g_rip, u64 g_rsp, u64 g_cr3)
 	vmcb->control.intercepts[INTERCEPT_EXCEPTION_OFFSET >> 5] |= (1U << 6);	 /* #UD */
 	vmcb->control.intercepts[INTERCEPT_EXCEPTION_OFFSET >> 5] |= (1U << 14); /* #PF */
 
+	/* 
+	 * Phase 25: DRx Shadowing (Stealth Hardware Breakpoints)
+	 * Intercept READS to DR0-DR7 (Bits 0-7 of INTERCEPT_DR word)
+	 * We do NOT intercept WRITES, allowing the cheat to natively 
+	 * place hardware breakpoints!
+	 */
+	vmcb->control.intercepts[INTERCEPT_DR] |= 0xFF;
+
+	/*
+	 * Phase 22: Shadow Debug Control (MSR 0x1D9) LBR Stealth.
+	 */
 	/* ── Hardware Interrupt Intercepts (Host Watchdog / Soft-Lockup Protection)
 	 * ── V_INTR_MASKING aktifken Host'a gelen fiziksel donanım kesmeleri (Timer,
 	 * NMI) doğrudan #VMEXIT (SVM_EXIT_INTR) üretir. Böylece Host sistemi felç

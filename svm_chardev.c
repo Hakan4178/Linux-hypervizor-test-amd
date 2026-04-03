@@ -8,6 +8,7 @@
 
 #include "ring_minus_one.h"
 #include "npt_walk.h"
+#include "svm_trace.h"
 #include <linux/atomic.h>
 #include <linux/compat.h>
 #include <linux/fs.h>
@@ -223,6 +224,9 @@ static long svm_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		}
 
 		/* ─── EXIT & RESTORE ─── */
+		/* Phase 26: Complete chronological preservation of batches */
+		svm_trace_flush_batch();
+
 		/*
 		 * CRITICAL FIX: Keep session_rip/rsp up to date! 
 		 * If we exit to trampoline (ret_loop == 2), and later resume on a DIFFERENT CPU, 

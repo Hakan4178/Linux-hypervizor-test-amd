@@ -1,29 +1,19 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * svm_decode.S — Lightweight x86-64 Instruction Decoder & Micro-Emulator
- *
- * Phase 22: Saf assembly decoder — NPT Split-View (Shadow Memory) için.
- * Hypervisor hot-path'inde çalışır. L1 I-Cache dostu, deterministik.
- *
+ * svm_decode.S — Micro-Op Decoder & Emulator
+ * 
+ * Target: Ring -1 NPF Fast-Path (L1-I / L1-D / Op-Cache Optimized)
+ * 
  * Calling Convention (System V AMD64 ABI):
- *   RDI = const u8 *insn_buf   (15 byte pre-fetched instruction buffer)
- *   RSI = struct guest_regs *   (software-saved GPRs: rbx,rcx,rdx,...)
- *   RDX = void *vmcb_save       (hardware-saved: rax @ +0x5F8 relative to vmcb)
- *
+ *   RDI = insn_buf (15-byte pre-fetched instruction buffer)
+ *   RSI = struct guest_regs *  (Software saved GPRs)
+ *   RDX = void *vmcb_save      (Hardware saved VMCB offsets)
+ * 
  * Return (EAX):
- *   bits [7:0]  = instruction length (0 = failed)
- *   bit  8      = emulated
- *   bit  9      = branch (RIP modified)
- *   bit  10     = memory access (single-step fallback needed)
- *
- * guest_regs layout (offsets from RSI):
- *   +0x00 rbx, +0x08 rcx, +0x10 rdx, +0x18 rsi, +0x20 rdi,
- *   +0x28 rbp, +0x30 r8,  +0x38 r9,  +0x40 r10, +0x48 r11,
- *   +0x50 r12, +0x58 r13, +0x60 r14, +0x68 r15
- *
- * vmcb_save: RAX lives at a known offset passed in RDX.
- *   We treat RDX as direct pointer to vmcb->save.rax for simplicity.
- *   Caller sets RDX = &vmcb->save (we use offset 0x1F8 for rax within save area)
+ *   bits [7:0] = Instruction length (0 = failed)
+ *   bit  8     = EMULATED flag
+ *   bit  9     = BRANCH flag (RIP altered)
+ *   bit  10    = MEMOP flag (Requires single-step)
  */
 
 #include <linux/objtool.h>
@@ -90,6 +80,21 @@ reg_offset_table:
 	.short GREGS_R15                /* 15 = R15 */
 
 /* ═══════════════════════════════════════════════════════════════════════════
+ *  L1/L0 Cache Friendly Fast-Path Opcode LUT (Phase 24)
+ *  Hits on NOP, PUSH, POP, RET immediately without decoding overhead.
+ *  Returns 16-bit: (Flags << 8) | Length. (0 = FAST_PATH_FAIL/Slow-Path)
+ * ═══════════════════════════════════════════════════════════════════════════ */
+.align 64
+fast_opcode_lut:
+	.fill 80, 2, 0          /* 0x00 - 0x4F: Fallback/Complex */
+	.fill 16, 2, 0x0401     /* 0x50 - 0x5F: PUSH/POP (RET_MEMOP | len 1) */
+	.fill 48, 2, 0          /* 0x60 - 0x8F: Fallback */
+	.short 0x0101           /* 0x90: NOP (RET_EMULATED | len 1) */
+	.fill 50, 2, 0          /* 0x91 - 0xC2: Fallback */
+	.short 0x0401           /* 0xC3: RET (RET_MEMOP | len 1) */
+	.fill 60, 2, 0          /* 0xC4 - 0xFF: Fallback */
+
+/* ═══════════════════════════════════════════════════════════════════════════
  *  Entry Point
  * ═══════════════════════════════════════════════════════════════════════════ */
 
@@ -136,9 +141,27 @@ SYM_FUNC_START(svm_decode_insn)
 /* ─── Phase 2: Opcode Dispatch ─── */
 .Ldispatch:
 	movzbl	(%r12, %r15, 1), %eax
+
+	/* [Phase 24] L1-D Cache Fast-Path Check */
+	leaq	fast_opcode_lut(%rip), %rcx
+	movzwl	(%rcx, %rax, 2), %ecx   /* Load 16-bit LUT entry (scale 2) */
+	test	%ecx, %ecx
+	jz	.Ldispatch_slow         /* If zero, fallback to complex decoding */
+
+	/* Fast-Path HIT! */
+	inc	%r15d                   /* cursor past opcode byte */
+	movzx	%cl, %edx               /* Lower 8 bits = additional base length */
+	dec	%edx                    /* Because r15d already incremented by 1 for opcode */
+	add	%edx, %r15d
+	mov	%r15d, %eax
+	and	$0xFF00, %ecx           /* Upper 8 bits = Flags (RET_EMULATED / RET_MEMOP) */
+	or	%ecx, %eax              /* Merge flags with total length */
+	jmp	.Lreturn
+
+.Ldispatch_slow:
 	inc	%r15		/* cursor past opcode byte */
 
-	/* NOP (0x90) */
+	/* NOP (0x90) (Now primarily handled by fast-path, kept for safety) */
 	cmp	$0x90, %al
 	je	.Lhandle_nop
 

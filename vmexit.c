@@ -17,19 +17,6 @@
 #include <linux/kallsyms.h>
 #include <linux/sched/signal.h>
 
-/* AMD NPF ExitCode and info1 flags */
-#define SVM_EXIT_NPF 0x400
-#define NPF_INFO1_PRESENT (1ULL << 0)
-#define NPF_INFO1_WRITE   (1ULL << 1)
-#define NPF_INFO1_USER    (1ULL << 2)
-#define NPF_INFO1_RSV     (1ULL << 3)
-#define NPF_INFO1_EXECUTE (1ULL << 4)  /* Phase 18: NX violation */
-
-/* AMD VMCB exception intercept: #DB = vector 1 */
-#define EXCEPT_DB_BIT (1U << 1)
-
-/* Guest RFLAGS Trap Flag for MTF single-step */
-#define RFLAGS_TF (1ULL << 8)
 
 /* State is now tracked per process in ctx->pending_rearm_gpa */
 
@@ -47,14 +34,6 @@
 
 /* Ping-Pong Guard: ardışık kernel #PF re-injection limiti */
 #define KERNEL_PF_REINJECT_MAX 256
-
-/*
- * NPT identity map physical limit. Must match the value passed to
- * npt_build_identity_map() in main.c. GPA outside this range is
- * never legitimate and indicates a confused or malicious guest.
- */
-#define NPT_PHYS_LIMIT (1ULL << 36) /* 64 GB */
-
 /*
  * TSC Drift Guard: Maximum compensation per single #NPF exit.
  * ~10ms at 3GHz = 30,000,000 cycles. If hypervisor somehow
@@ -416,10 +395,10 @@ int svm_run_guest(struct svm_context *ctx, struct guest_regs *regs)
 	/* ── Target Cost Heuristics (Predictive Scheduler) ── */
 	s64 target_cost = 90; // Default fast CPUID
 
-	switch (exit_code) {
-	case SVM_EXIT_CPUID: {
+	if (likely(exit_code == SVM_EXIT_NPF)) {
+		/* Fast-Path for #NPF (No cost modifiers needed) */
+	} else if (likely(exit_code == SVM_EXIT_CPUID)) {
 		u32 leaf = (u32)ctx->vmcb->save.rax;
-
 		if (leaf >= 0x0B)
 			target_cost = -100;
 		else if (tsc_since_last_exit < 15000 && rip_diff < 32) {
@@ -428,22 +407,40 @@ int svm_run_guest(struct svm_context *ctx, struct guest_regs *regs)
 		} else {
 			target_cost = 80;
 		}
-		break;
-	}
-	case SVM_EXIT_MSR:
+	} else if (exit_code == SVM_EXIT_MSR) {
 		target_cost = 120;
-		break;
-	case SVM_EXIT_IOIO:
+	} else if (exit_code == SVM_EXIT_IOIO) {
 		target_cost = 250;
-		break;
 	}
 
-	/* ── Dispatch (Host İşlemleri) ── */
-	switch (exit_code) {
-	case SVM_EXIT_CPUID:
-		handle_cpuid(ctx->vmcb, regs);
-		break;
+	/* ── Branch Prediction Optimized Dispatch ── */
+	if (likely(exit_code == SVM_EXIT_NPF)) {
+		u64 gpa = ctx->vmcb->control.exit_info_2;
+		u64 npf_entry_tsc = rdtsc(); /* TSC Compensation */
 
+		/* NPF Infinite Loop Guard */
+		if (unlikely(gpa == ctx->last_npf_gpa)) {
+			ctx->npf_loop_count++;
+			if (unlikely(ctx->npf_loop_count > 10000)) {
+				pr_emerg("[MATRIX] *** KILL SWITCH: NPF INFINITE LOOP at GPA 0x%llx! Ejecting. ***\n", gpa);
+				ctx->npf_loop_count = 0;
+				ret = 1;
+				goto out;
+			}
+		} else {
+			ctx->last_npf_gpa = gpa;
+			ctx->npf_loop_count = 0;
+		}
+
+		handle_npf(ctx, npf_entry_tsc);
+		goto post_dispatch;
+	} else if (likely(exit_code == SVM_EXIT_CPUID)) {
+		handle_cpuid(ctx->vmcb, regs);
+		goto post_dispatch;
+	}
+
+	/* ── Cold Path (Slow Exits) ── */
+	switch (exit_code) {
 	case SVM_EXIT_HLT:
 		pr_info("[VMEXIT] Guest HLT — normal exit (0x78)\n");
 		ret = 1; /* signal to break outer loop in ioctl */
@@ -463,239 +460,35 @@ int svm_run_guest(struct svm_context *ctx, struct guest_regs *regs)
 		break;
 #endif
 
-	case SVM_EXIT_NPF: {
-		u64 gpa = ctx->vmcb->control.exit_info_2;
-		u64 info1 = ctx->vmcb->control.exit_info_1;
+	case 0x020 ... 0x027: { /* SVM_EXIT_READ_DR0 ... SVM_EXIT_READ_DR7 */
+		int reg_index = ctx->vmcb->control.exit_info_1 & 0xF;
 
-		u64 npf_entry_tsc = rdtsc(); /* TSC Compensation: Zamanlayıcıyı başlat */
-
-		/*
-		 * Kill Switch 2: NPF Infinite Loop Guard
-		 * Eğer aynı GPA üzerinde sürekli NPF hatası alıyorsak (decoder bypass
-		 * veya forward progress yoksa), sistemi kilitlenmekten (hard-lock) kurtar.
+		/* 
+		 * Phase 25: DRx Stealth Shadowing
+		 * Anti-Cheat attempts to read DR0-DR7 to check for hardware breakpoints.
+		 * We return 0, blinding the AC, while hardware retains the actual breakpoint!
 		 */
-		if (gpa == ctx->last_npf_gpa) {
-			ctx->npf_loop_count++;
-			if (ctx->npf_loop_count > 10000) {
-				pr_emerg("[MATRIX] *** KILL SWITCH: NPF INFINITE LOOP at GPA 0x%llx! Ejecting. ***\n", gpa);
-				ctx->npf_loop_count = 0;
-				ret = 1;
-				break;
-			}
-		} else {
-			ctx->last_npf_gpa = gpa;
-			ctx->npf_loop_count = 0;
+		switch (reg_index) {
+		case 0: ctx->vmcb->save.rax = 0; break;
+		case 1: regs->rcx = 0; break;
+		case 2: regs->rdx = 0; break;
+		case 3: regs->rbx = 0; break;
+		case 4: ctx->vmcb->save.rsp = 0; break;
+		case 5: regs->rbp = 0; break;
+		case 6: regs->rsi = 0; break;
+		case 7: regs->rdi = 0; break;
+		case 8: regs->r8 = 0; break;
+		case 9: regs->r9 = 0; break;
+		case 10: regs->r10 = 0; break;
+		case 11: regs->r11 = 0; break;
+		case 12: regs->r12 = 0; break;
+		case 13: regs->r13 = 0; break;
+		case 14: regs->r14 = 0; break;
+		case 15: regs->r15 = 0; break;
 		}
 
-		/*
-		 * ═══════════════════════════════════════════════════════════════
-		 * Phase 18 [IF]: Surgical NX Execute-Fault Handler (Hardened)
-		 *
-		 * VMP decrypted bir sayfayı execute etmeye kalktığında
-		 * NPT'deki NX biti #NPF üretir. Sadece izlenen (watched)
-		 * sayfalar bu dallanmaya düşer.
-		 *
-		 * TSC COMPENSATION: Her #NPF'de hypervisor'da geçen süre
-		 * hesaplanır ve vmcb->control.tsc_offset'ten düşülür.
-		 * Guest RDTSC okuduğunda zamanın büküldüğünü göremez.
-		 *
-		 * INVLPGA: Full TLB flush yerine sadece hedef ASID+GPA
-		 * çifti invalidate edilir. O(1) maliyet.
-		 * ═══════════════════════════════════════════════════════════════
-		 */
-		if (info1 & NPF_INFO1_EXECUTE) {
-			u32 watch_flags = npt_hook_is_watched(gpa);
-
-			if (watch_flags & NPT_WATCH_NX) {
-				/* GPA güvenlik kontrolü */
-				if (gpa >= NPT_PHYS_LIMIT || !pfn_valid(gpa >> PAGE_SHIFT))
-					break;
-
-				/* Telemetry: Execute trap logla */
-				void *hva = phys_to_virt(gpa & PAGE_MASK);
-
-				svm_trace_emit_dirty(ctx->vmcb->save.cr3,
-						     ctx->vmcb->save.rip,
-						     gpa & PAGE_MASK, hva);
-
-				/*
-				 * Phase 21: Instruction Decoder (Split-View)
-				 * Before lifting NX and exposing the page, try to decode and emulate 
-				 * register-only instructions natively from host memory.
-				 *
-				 * SAFARI / BOUNDARY CHECK: gpa is Guest Physical, we must precisely 
-				 * map it to Host Physical, and handle cross-page instruction fetches.
-				 */
-				{
-					u8 insn_buf[15] = {0};
-					u64 hpa1 = npt_get_hpa(&ctx->npt, gpa);
-
-					if (hpa1 && pfn_valid(hpa1 >> PAGE_SHIFT)) {
-						void *hva1 = phys_to_virt(hpa1);
-						size_t bytes_in_page = PAGE_SIZE - (hpa1 & ~PAGE_MASK);
-						size_t read_len1 = (bytes_in_page < 15) ? bytes_in_page : 15;
-
-						memcpy(insn_buf, hva1, read_len1);
-
-						/* Handle instructions crossing a physical page boundary safely */
-						if (read_len1 < 15) {
-							u64 gpa2 = gpa + read_len1;
-							u64 hpa2 = npt_get_hpa(&ctx->npt, gpa2);
-							
-							if (hpa2 && pfn_valid(hpa2 >> PAGE_SHIFT)) {
-								void *hva2 = phys_to_virt(hpa2);
-								memcpy(insn_buf + read_len1, hva2, 15 - read_len1);
-							}
-						}
-
-						/* Attempt hypervisor-level emulation */
-						u32 decode_result = svm_decode_insn(insn_buf, &ctx->gregs, &ctx->vmcb->save);
-						u32 insn_len = decode_result & DECODE_LEN_MASK;
-
-						if ((decode_result & DECODE_ACTION_EMULATED) && insn_len > 0) {
-							/* Successfully emulated register operation! No NX lift needed. */
-							if (!(decode_result & DECODE_ACTION_BRANCH))
-								ctx->vmcb->save.rip += insn_len;
-
-							/* Telemetry trace (0, 0 since it's just sequential emulation unless branch) */
-							svm_trace_emit_lbr(ctx->vmcb->save.cr3, ctx->vmcb->save.rip, 0, 0, insn_buf, 15);
-
-							/* Enforce TSC Compensation / Drift Control before seamless resume */
-							u64 npf_exit_tsc = rdtsc();
-							u64 hv_delta = npf_exit_tsc - npf_entry_tsc;
-							if (hv_delta > TSC_COMP_MAX_DELTA)
-								hv_delta = TSC_COMP_MAX_DELTA;
-							
-							ctx->vmcb->control.tsc_offset -= hv_delta;
-							ctx->vmcb->control.clean &= ~VMCB_CLEAN_TSC;
-
-							break; /* Resume guest transparently */
-						}
-					}
-				}
-
-				/* NPT'den geçici olarak NX'i kaldır (execute izni ver) - Fallback */
-				{
-					u64 *pml4 = ctx->npt.pml4;
-					int pml4i = (gpa >> 39) & 0x1FF;
-					int pdpti = (gpa >> 30) & 0x1FF;
-					int pdi = (gpa >> 21) & 0x1FF;
-
-					u64 pdpt_phys = pml4[pml4i] & 0x000FFFFFFFFFF000ULL;
-
-					if (!pdpt_phys || !pfn_valid(pdpt_phys >> PAGE_SHIFT))
-						goto skip_nx_rearm;
-					u64 *pdpt = (u64 *)phys_to_virt(pdpt_phys);
-
-					u64 pd_phys = pdpt[pdpti] & 0x000FFFFFFFFFF000ULL;
-
-					if (!pd_phys || !pfn_valid(pd_phys >> PAGE_SHIFT))
-						goto skip_nx_rearm;
-					u64 *pd = (u64 *)phys_to_virt(pd_phys);
-
-					pd[pdi] &= ~NPT_NX; /* Geçici execute izni */
-				}
-
-				/*
-				 * INVLPGA: Sadece bu ASID+GPA için TLB entry'sini düşür.
-				 * Full flush (TLB_CTL=1) yapmak yerine cerrahi invalidation.
-				 *
-				 * NOT: INVLPGA sadece yerel çekirdeğin TLB'sini temizler.
-				 * Multi-core senaryoda stale TLB riski var. Ancak Matrix
-				 * süreci CPU 0'a pinli olduğu için (svm_chardev.c) bu
-				 * güvenli. Faz 19'da multi-core desteği gelirse INVLPGB
-				 * veya IPI-flush mekanizmasına geçilmeli.
-				 */
-				asm volatile("invlpga" :: "a"(gpa & PAGE_MASK),
-					     "c"((u32)ctx->vmcb->control.asid));
-
-skip_nx_rearm:
-				ctx->pending_rearm_gpa = gpa & PAGE_MASK;
-				ctx->pending_rearm_nx = 1; /* Instruct #DB handler to lift EXACTLY NX */
-				ctx->vmcb->save.rflags |= RFLAGS_TF;
-				ctx->vmcb->control.intercepts[INTERCEPT_EXCEPTION_OFFSET >> 5] |=
-				    EXCEPT_DB_BIT;
-				ctx->vmcb->control.clean &= ~(VMCB_CLEAN_NP | VMCB_CLEAN_INTERCEPTS);
-			}
-
-			/* TSC Compensation: Hypervisor'da geçen süreyi Guest TSC'den sil */
-			{
-				u64 npf_exit_tsc = rdtsc();
-				u64 hv_delta = npf_exit_tsc - npf_entry_tsc;
-
-				/* Drift Guard: Üst sınır aşılırsa cap uygula */
-				if (hv_delta > TSC_COMP_MAX_DELTA)
-					hv_delta = TSC_COMP_MAX_DELTA;
-
-				ctx->vmcb->control.tsc_offset -= hv_delta;
-				ctx->vmcb->control.clean &= ~VMCB_CLEAN_TSC;
-			}
-			break;
-		}
-
-		if (info1 & NPF_INFO1_WRITE) {
-			/*
-			 * SECURITY: Validate GPA is within our identity map.
-			 */
-			if (gpa >= NPT_PHYS_LIMIT)
-				break;
-
-			if (!pfn_valid(gpa >> PAGE_SHIFT))
-				break;
-
-			void *hva = phys_to_virt(gpa & PAGE_MASK);
-
-			svm_trace_emit_dirty(ctx->vmcb->save.cr3, ctx->vmcb->save.rip,
-					     gpa & PAGE_MASK, hva);
-
-			{
-				u64 *pml4 = ctx->npt.pml4;
-				int pml4i = (gpa >> 39) & 0x1FF;
-				int pdpti = (gpa >> 30) & 0x1FF;
-				int pdi = (gpa >> 21) & 0x1FF;
-
-				u64 pdpt_phys = pml4[pml4i] & 0x000FFFFFFFFFF000ULL;
-
-				if (!pdpt_phys || !pfn_valid(pdpt_phys >> PAGE_SHIFT))
-					goto skip_rearm;
-				u64 *pdpt = (u64 *)phys_to_virt(pdpt_phys);
-
-				u64 pd_phys = pdpt[pdpti] & 0x000FFFFFFFFFF000ULL;
-
-				if (!pd_phys || !pfn_valid(pd_phys >> PAGE_SHIFT))
-					goto skip_rearm;
-				u64 *pd = (u64 *)phys_to_virt(pd_phys);
-
-				pd[pdi] |= NPT_WRITE;
-			}
-
-			/*
-			 * INVLPGA: Cerrahi TLB invalidation (Write-fault path)
-			 */
-			asm volatile("invlpga" :: "a"(gpa & PAGE_MASK),
-				     "c"((u32)ctx->vmcb->control.asid));
-
-skip_rearm:
-			ctx->pending_rearm_gpa = gpa & PAGE_MASK;
-			ctx->pending_rearm_nx = 0; /* Instruct #DB handler to restore NPT_WRITE, not NPT_NX */
-			ctx->vmcb->save.rflags |= RFLAGS_TF;
-			ctx->vmcb->control.intercepts[INTERCEPT_EXCEPTION_OFFSET >> 5] |=
-			    EXCEPT_DB_BIT;
-			ctx->vmcb->control.clean &= ~(VMCB_CLEAN_NP | VMCB_CLEAN_INTERCEPTS);
-
-			/* TSC Compensation: Write-fault path */
-			{
-				u64 npf_exit_tsc = rdtsc();
-				u64 hv_delta = npf_exit_tsc - npf_entry_tsc;
-
-				/* Drift Guard: Üst sınır aşılırsa cap uygula */
-				if (hv_delta > TSC_COMP_MAX_DELTA)
-					hv_delta = TSC_COMP_MAX_DELTA;
-
-				ctx->vmcb->control.tsc_offset -= hv_delta;
-				ctx->vmcb->control.clean &= ~VMCB_CLEAN_TSC;
-			}
-		}
+		/* Hardware correctly populates next_rip for DR instruction intercepts */
+		ctx->vmcb->save.rip = ctx->vmcb->control.next_rip;
 		break;
 	}
 
@@ -755,8 +548,8 @@ skip_rearm:
 		 * Kill Switch: Guest magic register pattern ile acil çıkış.
 		 * RAX=0xDEADBEEF... + RBX=0x1337... → temiz Matrix eject.
 		 */
-		if (ctx->vmcb->save.rax == KILL_SWITCH_RAX &&
-		    regs->rbx == KILL_SWITCH_RBX) {
+		if (unlikely(ctx->vmcb->save.rax == KILL_SWITCH_RAX &&
+		    regs->rbx == KILL_SWITCH_RBX)) {
 			pr_emerg("[MATRIX] *** KILL SWITCH TRIGGERED *** Ejecting PID %d\n",
 				 current->pid);
 			ctx->kernel_pf_count = 0;
@@ -770,10 +563,10 @@ skip_rearm:
 		 * erişimi vb. meşru sayfa hatalarıdır.
 		 * AMD APM Vol.2 §15.20: Event Injection
 		 */
-		if (fault_va >= TASK_SIZE_MAX) {
+		if (unlikely(fault_va >= TASK_SIZE_MAX)) {
 			/* Ping-Pong Guard: ardışık re-injection sayacı */
 			ctx->kernel_pf_count++;
-			if (ctx->kernel_pf_count > KERNEL_PF_REINJECT_MAX) {
+			if (unlikely(ctx->kernel_pf_count > KERNEL_PF_REINJECT_MAX)) {
 				pr_err("[MATRIX] PING-PONG GUARD: %u consecutive kernel #PFs! Ejecting.\n",
 				       ctx->kernel_pf_count);
 				ctx->kernel_pf_count = 0;
@@ -883,6 +676,7 @@ skip_rearm:
 		goto out;
 	}
 
+post_dispatch:
 	/* ── Phase 2: LBR Chronological Drain ── */
 	pr_info_once("[VMEXIT] Telemetry drain reached (exit_code=0x%llx, ret=%d)\n", exit_code, ret);
 	{

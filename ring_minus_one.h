@@ -47,8 +47,29 @@
 #include "svm_dump.h"
 #include "npt_walk.h"
 
-/* ── Moved to npt_walk.h ── */
+/* Nested Page Fault Exit Info 1 Bitmasks */
+#define SVM_EXIT_NPF 0x400
+#define NPF_INFO1_PRESENT (1ULL << 0)
+#define NPF_INFO1_WRITE   (1ULL << 1)
+#define NPF_INFO1_USER    (1ULL << 2)
+#define NPF_INFO1_RSV     (1ULL << 3)
+#define NPF_INFO1_EXECUTE (1ULL << 4)  /* Phase 18: NX violation */
 
+/* AMD VMCB exception intercept: #DB = vector 1 */
+#define EXCEPT_DB_BIT (1U << 1)
+
+/* EXCEPTION VECTORS */
+#define INTERCEPT_EXCEPTION_OFFSET 0x0C
+
+/* Guest RFLAGS Trap Flag for MTF single-step */
+#define RFLAGS_TF (1ULL << 8)
+
+/*
+ * NPT identity map physical limit. Must match the value passed to
+ * npt_build_identity_map() in main.c. GPA outside this range is
+ * never legitimate and indicates a confused or malicious guest.
+ */
+#define NPT_PHYS_LIMIT (1ULL << 36) /* 64 GB */
 /*
  * AMD-V VMCB Clean Bits (APM Vol.2 §15.15.4)
  * Setting a bit = "this field hasn't changed, skip reload"
@@ -150,23 +171,28 @@ struct matrix_exit_info {
  */
 
 struct svm_context {
+  /* HOTTEST CACHE LINES - Hit immediately on every VMEXIT */
   struct vmcb *vmcb;
   phys_addr_t vmcb_pa;
+  /* Gerekli: Kapsamdan Cikinca Yok Olmamasi İcin Guest GPR'ler */
+  struct guest_regs gregs;
 
+  /* NPT & VMRUN State */
   void *hsave_va;
   phys_addr_t hsave_pa;
+  struct npt_context npt;
 
-  u8 *code_page;
-  u8 *stack_page;
-
+  /* Control MSR/IO Bitmaps */
   void *msrpm_va;
   phys_addr_t msrpm_pa;
-
   void *iopm_va;
   phys_addr_t iopm_pa;
 
-  struct npt_context npt;
+  /* Memory maps */
+  u8 *code_page;
+  u8 *stack_page;
 
+  /* JIT/Hooking variables */
   u64 pending_rearm_gpa;
   u8  pending_rearm_nx;   /* 1 = NX rearm (execute fault), 0 = Write rearm */
   u32 kernel_pf_count;  /* Ping-Pong Guard: ardışık kernel #PF sayacı */
@@ -183,10 +209,7 @@ struct svm_context {
 
   /* [PHASE 17 V2] Shadow Debug Control */
   u64 shadow_dbgctl;
-
-  /* Gerekli: Kapsamdan Cikinca Yok Olmamasi İcin Guest GPR'ler */
-  struct guest_regs gregs;
-};
+} ____cacheline_aligned;
 
 struct snap_context {
   struct mutex lock;
@@ -240,9 +263,13 @@ void vmrun_with_regs(u64 vmcb_pa, struct guest_regs *regs);
 void raw_cr3_flush(void);
 
 /* tsc_stealth.c */
+#define TSC_COMP_MAX_DELTA (30000000ULL)
 u64 vmrun_tsc_compensated(struct svm_context *ctx);
 void tsc_offset_reset(void);
 u64 tsc_jitter(u64 min, u64 max);
+
+/* svm_npf.c */
+void handle_npf(struct svm_context *ctx, u64 npf_entry_tsc);
 
 /* Prototypes moved to npt_walk.h and svm_npt_hook.c */
 u64 npt_get_hpa(struct npt_context *ctx, u64 gpa);

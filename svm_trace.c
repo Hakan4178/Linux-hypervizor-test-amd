@@ -30,6 +30,7 @@
 #include <linux/uaccess.h>
 #include <linux/mm.h>
 #include <linux/vmalloc.h>
+#include <linux/percpu.h>
 
 /* ── Module-level ring instance ────────────────────────────────────────── */
 extern atomic_t matrix_active;
@@ -121,24 +122,58 @@ static int ring_write_nofault(struct svm_trace_ring *r, u64 offset, const void *
 	return ret;
 }
 
+/* ── Batching & Cache Optimization (Phase 26) ───────────────────────────── */
+
+#define BATCH_COUNT_LIMIT 64
+#define LOCAL_TRACE_CHUNK 512
+
+struct local_trace_buf {
+	u8 data[BATCH_COUNT_LIMIT * LOCAL_TRACE_CHUNK] __aligned(64);
+	u32 offset;
+	u32 count;
+};
+
+static DEFINE_PER_CPU(struct local_trace_buf, ltrace_buf);
+
+void svm_trace_flush_batch(void)
+{
+	struct local_trace_buf *lbuf = this_cpu_ptr(&ltrace_buf);
+	unsigned long flags;
+	u64 ring_off;
+
+	if (lbuf->count == 0)
+		return;
+
+	raw_spin_lock_irqsave(&trace_write_lock, flags);
+	ring_off = ring_reserve(&svm_tring, lbuf->offset);
+	ring_write(&svm_tring, ring_off, lbuf->data, lbuf->offset);
+	atomic64_add(lbuf->offset, &svm_tring.commit_idx);
+	raw_spin_unlock_irqrestore(&trace_write_lock, flags);
+
+	/* Phase 26: Force Cache Write-Back boundary (SFENCE acts as global guard) */
+	asm volatile("sfence" ::: "memory");
+
+	wake_up_interruptible(&svm_trace_wq);
+
+	lbuf->offset = 0;
+	lbuf->count = 0;
+}
+EXPORT_SYMBOL_GPL(svm_trace_flush_batch);
+
 /* ── LBR drain ──────────────────────────────────────────────────────────── */
 
 /*
  * svm_trace_emit_lbr - Read all AMD LBR MSR pairs, emit one ring record.
  *
- * AMD pushes the *most recent* branch to the lowest-index slot on each call.
- * We read MSRs 0..N-1 left-to-right so entry 0 is the newest.  The consumer
- * can reverse if it needs chronological order, but capturing them in MSR order
- * ensures we never miss any entry regardless of how fast the guest runs.
+ * Modified in Phase 26 to utilize lockless batching, eliminating Cache Line Bouncing.
  */
 void svm_trace_emit_lbr(u64 cr3, u64 rip, u64 br_from, u64 br_to,
 			const u8 *insn_buf, u32 insn_len)
 {
 	struct svm_trace_entry hdr;
 	struct svm_lbr_pair lbr[AMD_LBR_STACK_DEPTH];
-	unsigned long flags;
-	u32 i, valid_count = 0;
-	u64 offset;
+	struct local_trace_buf *lbuf;
+	u32 i, valid_count = 0, total;
 
 	if (unlikely(!svm_tring.buffer))
 		return;
@@ -146,14 +181,9 @@ void svm_trace_emit_lbr(u64 cr3, u64 rip, u64 br_from, u64 br_to,
 	memset(&hdr, 0, sizeof(hdr));
 	memset(lbr, 0, sizeof(lbr));
 
-	/* Cap instruction length to something sane */
 	if (insn_len > 32)
 		insn_len = 32;
 
-	/* 
-	 * Telemetry Resilience: 
-	 * 1. Try to drain the full hardware LBR stack via MSRs if LBRV is active.
-	 */
 	if (boot_cpu_has(X86_FEATURE_LBRV)) {
 		for (i = 0; i < AMD_LBR_STACK_DEPTH; i++) {
 			if (rdmsrq_safe(MSR_AMD_LBR_FROM_BASE + i, &lbr[i].from))
@@ -164,10 +194,6 @@ void svm_trace_emit_lbr(u64 cr3, u64 rip, u64 br_from, u64 br_to,
 		}
 	}
 
-	/* 
-	 * 2. Fallback: If stack is empty but we have a valid VMCB branch, use it.
-	 * This ensures visibility even on hardware that only reports the last branch.
-	 */
 	if (valid_count == 0 && (br_from || br_to)) {
 		lbr[0].from = br_from;
 		lbr[0].to = br_to;
@@ -184,25 +210,19 @@ void svm_trace_emit_lbr(u64 cr3, u64 rip, u64 br_from, u64 br_to,
 	hdr.data_size = insn_len;
 	memcpy(hdr.lbr, lbr, sizeof(lbr));
 
-	{
-		u32 total = sizeof(hdr) + insn_len;
+	total = sizeof(hdr) + insn_len;
+	lbuf = this_cpu_ptr(&ltrace_buf);
 
-		raw_spin_lock_irqsave(&trace_write_lock, flags);
-		offset = ring_reserve(&svm_tring, total);
-		ring_write(&svm_tring, offset, &hdr, sizeof(hdr));
-
-		if (insn_len > 0 && insn_buf) {
-			u64 data_off = (offset + sizeof(hdr)) % svm_tring.size;
-			ring_write(&svm_tring, data_off, insn_buf, insn_len);
-		}
-
-		atomic64_add(total, &svm_tring.commit_idx);
-		raw_spin_unlock_irqrestore(&trace_write_lock, flags);
+	if (unlikely(lbuf->offset + total >= sizeof(lbuf->data)) || unlikely(lbuf->count >= BATCH_COUNT_LIMIT)) {
+		svm_trace_flush_batch();
 	}
 
-	pr_info_once("[SVM_TRACE] First telemetry record (LBR Fallback: %s) emitted.\n",
-		     valid_count > 0 ? "YES" : "NO (RIP Only)");
-	wake_up_interruptible(&svm_trace_wq);
+	memcpy(lbuf->data + lbuf->offset, &hdr, sizeof(hdr));
+	if (insn_len > 0 && insn_buf)
+		memcpy(lbuf->data + lbuf->offset + sizeof(hdr), insn_buf, insn_len);
+
+	lbuf->offset += total;
+	lbuf->count++;
 }
 
 /* ── NPF dirty-page capture ─────────────────────────────────────────────── */
@@ -219,6 +239,9 @@ void svm_trace_emit_dirty(u64 cr3, u64 rip, u64 fault_gpa, const void *hva)
 	u32 total = sizeof(hdr) + PAGE_SIZE;
 	u64 offset, data_offset;
 	int copy_ret;
+
+	/* Phase 26: Always flush LBR batches first to maintain chronological order in ring buffer */
+	svm_trace_flush_batch();
 
 	/* Bulgu #1: NULL buffer koruması */
 	if (unlikely(!svm_tring.buffer))
