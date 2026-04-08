@@ -9,6 +9,7 @@
 #include "ring_minus_one.h"
 #include "npt_walk.h"
 #include "svm_trace.h"
+#include <asm/debugreg.h>
 #include <linux/atomic.h>
 #include <linux/compat.h>
 #include <linux/fs.h>
@@ -24,6 +25,7 @@ extern wait_queue_head_t svm_trace_wq;
 /* Global lock to prevent multi-thread DoS and VMCB corruption */
 atomic_t matrix_active = ATOMIC_INIT(0);
 pid_t matrix_owner_pid;
+extern u64 ghost_exit_addr; /* svm_ghost.c */
 
 static long svm_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
@@ -140,6 +142,14 @@ static long svm_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			/* VMCB update will be cleanly handled inside the VMRUN loop via disabled preemption */
 		}
 
+		/* Phase 28C: Stealth DRx Hardware Breakpoint setup
+		 * DR0-DR3 are not stored in the VMCB, they are passed through to the guest.
+		 * We set host's DR0 to our stealth hook. Host ignores it because host DR7 is clean.
+		 * Guest hits it because we force guest's DR7 = 0x401 (Enable L0).
+		 */
+		native_set_debugreg(0, ghost_exit_addr);
+		g_svm->vmcb->save.dr7 = 0x401;
+
 		/* ─── VMRUN HYPERVISOR LOOP (Migration-Aware) ─── */
 		u64 iter_count = 0;
 		while (1) {
@@ -159,7 +169,6 @@ static long svm_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			}
 
 			if (signal_pending(current)) {
-				pr_info("[NTP_DAEMON] Thread caught signal, exiting Matrix.\n");
 				ret_loop = -EINTR;
 				break;
 			}
@@ -239,6 +248,14 @@ static long svm_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		 */
 		g_svm->session_rip = g_svm->vmcb->save.rip;
 		g_svm->session_rsp = g_svm->vmcb->save.rsp;
+
+		/* Phase 28C: Stealth DRx Exit Detection hit in pure assembly! */
+		if (ret_loop == 3 && has_u_exit_info) {
+			k_exit_info.exit_reason = 1;
+			k_exit_info.guest_rip = g_svm->vmcb->save.rip;
+			svm_trace_emit_log(7 /* LOG_EVENT_PROXY_HLT */,
+					g_svm->session_rip, 231 /* exit_group */, 0);
+		}
 
 		/* If ret_loop == 2, it's a SYSCALL Passthrough Request from vmexit.c! */
 		if (ret_loop == 2 && has_u_exit_info) {

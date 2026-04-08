@@ -1,22 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * VMEXIT Dispatch Loop (V4.1 Stealth)
- *
- * Full VMEXIT handler with:
- *  - CPUID stealth (hypervisor bit cleared, vendor leaves hidden)
- *  - MSR emulation (TSC compensation, pass-through)
- *  - I/O port blocking (PIT, ACPI PM Timer)
- *  - Per-CPU TSC compensation integrated into the loop
- *  - VMCB clean bits for minimal timing jitter
+ * VMEXIT Dispatch Loop
  */
 
 #include "ring_minus_one.h"
-#include "svm_trace.h"
 #include "svm_decode.h"
+#include "svm_trace.h"
 #include <linux/delay.h>
 #include <linux/kallsyms.h>
 #include <linux/sched/signal.h>
-
 
 /* State is now tracked per process in ctx->pending_rearm_gpa */
 
@@ -29,31 +21,12 @@
  *  Geliştirici güvenlik ağı: sonsuz döngü veya #PF ping-pong'da
  *  makineyi resetlemek yerine temiz çıkış sağlar.
  * ═══════════════════════════════════════════════════════════════════════════ */
-#define KILL_SWITCH_RAX  0xDEADBEEFDEADBEEFULL
-#define KILL_SWITCH_RBX  0x1337133713371337ULL
+#define KILL_SWITCH_RAX 0xDEADBEEFDEADBEEFULL
+#define KILL_SWITCH_RBX 0x1337133713371337ULL
 
 /* Ping-Pong Guard: ardışık kernel #PF re-injection limiti */
 #define KERNEL_PF_REINJECT_MAX 256
-/*
- * TSC Drift Guard: Maximum compensation per single #NPF exit.
- * ~10ms at 3GHz = 30,000,000 cycles. If hypervisor somehow
- * spends more than this in a single NPF (impossible normally),
- * we cap to prevent Clock Drift panics from TCP timestamps,
- * RTC desync, or Windows CLOCK_WATCHDOG_TIMEOUT.
- */
 #define TSC_COMP_MAX_DELTA (30000000ULL)
-
-/* ═══════════════════════════════════════════════════════════════════════════
- *  TSC Jitter PRNG — Anti Timing Analysis
- *
- *  Without jitter: every CPUID takes exactly N cycles → detected as emulated.
- *  With jitter: Gaussian-like noise makes timing look like real hardware
- *  (cache miss, pipeline stall, branch misprediction variance).
- *
- *  Uses a fast 64-bit LCG (Linear Congruential Generator).
- * ═══════════════════════════════════════════════════════════════════════════
- */
-
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  CPUID Handler — Anti-Detection Core
@@ -63,7 +36,6 @@
  *  All other leaves: native pass-through via host cpuid
  * ═══════════════════════════════════════════════════════════════════════════
  */
-
 
 static void handle_cpuid(struct vmcb *vmcb, struct guest_regs *regs)
 {
@@ -118,11 +90,6 @@ static void handle_msr(struct svm_context *ctx, struct guest_regs *regs)
 	bool is_write = vmcb->control.exit_info_1 & 1;
 	u64 val;
 
-	/* Beklenmeyen MSR istekleri 'default' case ile maskelenir ve safe olarak 0
-	 * dönülür, AMD'nin gelecekteki geçerli MSR range'lerini kestiğimiz için burada
-	 * manuel #GP enjeksiyonundan vazgeçildi.
-	 */
-
 	if (is_write) {
 		u64 wval = (regs->rdx << 32) | (vmcb->save.rax & 0xFFFFFFFFULL);
 
@@ -140,7 +107,8 @@ static void handle_msr(struct svm_context *ctx, struct guest_regs *regs)
 		case 0xC0000100: /* MSR_FS_BASE */
 		case 0xC0000101: /* MSR_GS_BASE */
 		case 0xC0000102: /* MSR_KERNEL_GS_BASE */
-			svm_trace_emit_log(LOG_EVENT_CR3_WRITE, vmcb->save.rip, wval, vmcb->save.cr3);
+			svm_trace_emit_log(LOG_EVENT_CR3_WRITE, vmcb->save.rip, wval,
+					   vmcb->save.cr3);
 			/* Native execute: TLS/SWAPGS bozulmamalı */
 			wrmsrq(msr_num, wval);
 			break;
@@ -201,12 +169,7 @@ static void handle_msr(struct svm_context *ctx, struct guest_regs *regs)
 	case 0x309: /* IA32_FIXED_CTR0 (instructions retired) */
 	case 0x30A: /* IA32_FIXED_CTR1 (unhalted core cycles) */
 	case 0x30B: /* IA32_FIXED_CTR2 (unhalted reference cycles) */
-		/*
-		 * EAC reads these to detect extra micro-ops from VMEXIT.
-		 * Return real value — the overhead is hidden by TSC compensation.
-		 * These counters are hardware and can't be easily faked,
-		 * but intercepting prevents cross-correlation attacks.
-		 */
+
 		if (rdmsrq_safe(msr_num, &val))
 			val = 0;
 		break;
@@ -422,7 +385,8 @@ int svm_run_guest(struct svm_context *ctx, struct guest_regs *regs)
 		if (unlikely(gpa == ctx->last_npf_gpa)) {
 			ctx->npf_loop_count++;
 			if (unlikely(ctx->npf_loop_count > 10000)) {
-				svm_trace_emit_log(LOG_EVENT_NPF_FATAL, ctx->vmcb->save.rip, gpa, 0xDEAD);
+				svm_trace_emit_log(LOG_EVENT_NPF_FATAL, ctx->vmcb->save.rip, gpa,
+						   0xDEAD);
 				ctx->npf_loop_count = 0;
 				ret = 1;
 				goto out;
@@ -460,10 +424,11 @@ int svm_run_guest(struct svm_context *ctx, struct guest_regs *regs)
 		break;
 #endif
 
-	/*
-	 * Phase 27: DRx reads (0x20 - 0x27) are now natively handled in True Zero-Stack Assembly
-	 * via MACRO_HANDLE_DRX in vmexit_fastpath.S. They will never reach this C handler.
-	 */
+		/*
+		 * Phase 27: DRx reads (0x20 - 0x27) are now natively handled in True Zero-Stack
+		 * Assembly via MACRO_HANDLE_DRX in vmexit_fastpath.S. They will never reach this C
+		 * handler.
+		 */
 
 	case SVM_EXIT_EXCP_BASE + 6: { /* #UD (Invalid Opcode) */
 		u8 opcode[2] = {0};
@@ -488,7 +453,8 @@ int svm_run_guest(struct svm_context *ctx, struct guest_regs *regs)
 				u64 syscall_nr = ctx->vmcb->save.rax;
 
 				if (syscall_nr == 60 || syscall_nr == 231) {
-					svm_trace_emit_log(LOG_EVENT_PROXY_HLT, ctx->vmcb->save.rip, syscall_nr, 0);
+					svm_trace_emit_log(LOG_EVENT_PROXY_HLT, ctx->vmcb->save.rip,
+							   syscall_nr, 0);
 					ret = 1; /* Structural termination of the VMRUN, clears
 						  * locks gracefully.
 						  */
@@ -520,8 +486,9 @@ int svm_run_guest(struct svm_context *ctx, struct guest_regs *regs)
 		 * RAX=0xDEADBEEF... + RBX=0x1337... → temiz Matrix eject.
 		 */
 		if (unlikely(ctx->vmcb->save.rax == KILL_SWITCH_RAX &&
-		    regs->rbx == KILL_SWITCH_RBX)) {
-			svm_trace_emit_log(LOG_EVENT_NPF_FATAL, ctx->vmcb->save.rip, fault_va, 0xDEAD);
+			     regs->rbx == KILL_SWITCH_RBX)) {
+			svm_trace_emit_log(LOG_EVENT_NPF_FATAL, ctx->vmcb->save.rip, fault_va,
+					   0xDEAD);
 			ctx->kernel_pf_count = 0;
 			ret = 1;
 			break;
@@ -537,15 +504,15 @@ int svm_run_guest(struct svm_context *ctx, struct guest_regs *regs)
 			/* Ping-Pong Guard: ardışık re-injection sayacı */
 			ctx->kernel_pf_count++;
 			if (unlikely(ctx->kernel_pf_count > KERNEL_PF_REINJECT_MAX)) {
-				svm_trace_emit_log(LOG_EVENT_PONG_GUARD, ctx->vmcb->save.rip, ctx->kernel_pf_count, 0);
+				svm_trace_emit_log(LOG_EVENT_PONG_GUARD, ctx->vmcb->save.rip,
+						   ctx->kernel_pf_count, 0);
 				ctx->kernel_pf_count = 0;
 				ret = 1;
 				break;
 			}
 
 			ctx->vmcb->control.event_inj =
-			    SVM_EVTINJ_VALID | SVM_EVTINJ_TYPE_EXEPT |
-			    SVM_EVTINJ_VALID_ERR | 14;
+			    SVM_EVTINJ_VALID | SVM_EVTINJ_TYPE_EXEPT | SVM_EVTINJ_VALID_ERR | 14;
 			ctx->vmcb->control.event_inj_err = error_code;
 			ctx->vmcb->save.cr2 = fault_va;
 			ret = 0;
@@ -566,7 +533,8 @@ int svm_run_guest(struct svm_context *ctx, struct guest_regs *regs)
 		if (copy_from_user(&dummy, (void __user *)fault_va, 1) == 0) {
 			if (error_code & 2) { /* The #PF was caused by a Write Access, force CoW */
 				if (copy_to_user((void __user *)fault_va, &dummy, 1)) {
-					svm_trace_emit_log(LOG_EVENT_NPF_FATAL, ctx->vmcb->save.rip, fault_va, 0);
+					svm_trace_emit_log(LOG_EVENT_NPF_FATAL, ctx->vmcb->save.rip,
+							   fault_va, 0);
 					ret = 1;
 					break;
 				}
@@ -614,12 +582,15 @@ int svm_run_guest(struct svm_context *ctx, struct guest_regs *regs)
 					if (pd_phys && pfn_valid(pd_phys >> PAGE_SHIFT)) {
 						u64 *pd = (u64 *)phys_to_virt(pd_phys);
 
-						/* Phase 21: Correctly re-arm NX or Write based on fault type */
+						/* Phase 21: Correctly re-arm NX or Write based on
+						 * fault type */
 						if (ctx->pending_rearm_nx) {
-							pd[pdi] |= NPT_NX;     /* Execute korumasını geri koy */
+							pd[pdi] |= NPT_NX; /* Execute korumasını
+									      geri koy */
 							ctx->pending_rearm_nx = 0;
 						} else {
-							pd[pdi] &= ~NPT_WRITE; /* Write korumasını geri koy */
+							pd[pdi] &= ~NPT_WRITE; /* Write korumasını
+										  geri koy */
 						}
 					}
 				}
@@ -660,8 +631,8 @@ post_dispatch:
 		}
 
 		svm_trace_emit_lbr(ctx->vmcb->save.cr3, ctx->vmcb->save.rip,
-				   ctx->vmcb->save.br_from, ctx->vmcb->save.br_to,
-				   lbr_insn, lbr_insn_len);
+				   ctx->vmcb->save.br_from, ctx->vmcb->save.br_to, lbr_insn,
+				   lbr_insn_len);
 	}
 
 	/* ── TSC Compensation (runs with IRQs ENABLED — safe, pinned to CPU 0) ── */

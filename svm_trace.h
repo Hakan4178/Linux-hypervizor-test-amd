@@ -38,6 +38,7 @@ extern wait_queue_head_t svm_trace_wq;
 #define LOG_EVENT_PONG_GUARD     5
 #define LOG_EVENT_NPF_FATAL      6
 #define LOG_EVENT_PROXY_HLT      7
+#define LOG_EVENT_CLONE          8
 
 /*
  * svm_lbr_pair - One FROM→TO branch record captured from hardware MSRs.

@@ -134,11 +134,12 @@ int vmcb_prepare_npt(struct svm_context *ctx, u64 g_rip, u64 g_rsp, u64 g_cr3)
 #endif
 
 	/* ── Exception Intercepts ──
-	 * #UD (6): EFER.SCE kapalı olduğu için SYSCALL → #UD üretir.
-	 *          Bu intercepti koymazsak CPU, Guest IDT'ye dalar → SMEP panic.
-	 * #PF (14): NPF zaten var ama guest-level #PF'i de yakala (güvenlik ağı).
+	 * Phase 28C: #UD intercept REMOVED — SCE=1, SYSCALL is native now.
+	 * Genuine #UD exceptions handled by guest kernel IDT.
+	 * #DB (1): Intercepted for Phase 28C Stealth DRx Breakpoints.
+	 * #PF (14): Guest-level #PF intercepted as safety net alongside NPF.
 	 */
-	vmcb->control.intercepts[INTERCEPT_EXCEPTION_OFFSET >> 5] |= (1U << 6);	 /* #UD */
+	vmcb->control.intercepts[INTERCEPT_EXCEPTION_OFFSET >> 5] |= (1U << 1);  /* #DB */
 	vmcb->control.intercepts[INTERCEPT_EXCEPTION_OFFSET >> 5] |= (1U << 14); /* #PF */
 
 	/* 
@@ -295,7 +296,11 @@ int vmcb_prepare_npt(struct svm_context *ctx, u64 g_rip, u64 g_rsp, u64 g_cr3)
 	 * by forcing an Invalid Opcode (#UD) exception in the guest.
 	 */
 	rdmsrl(MSR_EFER, msr_val);
-	vmcb->save.efer = (msr_val | EFER_SVME) & ~EFER_SCE;
+	vmcb->save.efer = msr_val | EFER_SVME;
+	/* Phase 28C: SCE=1 — SYSCALL runs natively inside guest.
+	 * Exit detection via kprobe(do_group_exit), fork via kprobe(kernel_clone).
+	 * Eliminates ~50K VMEXIT/sec from syscall trapping.
+	 */
 
 	/* TR (Task Register) - Triple Fault Fix (Security Fix #3)
 	 * 64-bit TSS descriptor = 16 byte (desc[0..3]), Intel/AMD SDM Vol.3 §7.2.3

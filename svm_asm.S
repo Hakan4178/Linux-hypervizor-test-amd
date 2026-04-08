@@ -88,6 +88,10 @@ SYM_FUNC_START(vmrun_with_regs)
     cmp $0x400, %eax
     je  .Lcheck_npf
 
+    /* Phase 28C: DRx Hook (#DB Exception) -> Fast Path Check */
+    cmp $0x41, %eax
+    je  .Lcheck_stealth_db
+
     /* 2. DRx Read Shadowing (0x20 ... 0x27) */
     sub $0x20, %eax
     cmp $7, %eax
@@ -111,6 +115,43 @@ SYM_FUNC_START(vmrun_with_regs)
 
     /* Unwatched Page -> Fast Resume via Macro */
     MACRO_FAST_VMRUN
+    .align 64
+
+.Lcheck_stealth_db:
+    /* Phase 28C: Zero-Stack #DB Intercept (Stealth Exit Hook)
+       Check if guest hit our hidden hardware breakpoint.
+       Guest RIP is at offset 0x578 (0x400 + 0x178) */
+    mov 0x578(%r14), %rcx
+    movq ghost_exit_addr(%rip), %r8
+    cmp %rcx, %r8
+    je .Lstealth_exit_hit
+
+    /* Not our breakpoint! (e.g. Guest AC single-stepping)
+       Zero-Stack Exception Injection: Forward #DB back to Guest OS!
+       Event Inj (offset 0xb0) = Valid (1<<31) | Exception(3<<8) | Vector(1)
+       0x80000301 */
+    movl $0x80000301, 0xb0(%r14)
+    MACRO_FAST_VMRUN
+
+.Lstealth_exit_hit:
+    /* WE HIT DO_GROUP_EXIT! Return to C with ret_loop = 3.
+       We must restore scratch registers because C expects them intact.
+       Actually, just falling through to .Lslow_path and returning 3 in rax. */
+    mov $3, %eax
+    
+    /* Restore guest volatile regs from our struct before exiting */
+    mov 0(%rsp), %rsi        /* regs pointer */
+    mov %r14, 0x60(%rsi)
+    mov %r8,  0x30(%rsi)
+    mov %rcx, 0x08(%rsi)
+    
+    /* Discard vmcb pointers from stack */
+    add $16, %rsp
+    
+    /* Return cleanly */
+    RESTORE_HOST_REGS
+    ret
+
     .align 64
 
 .Lhandle_drx:
