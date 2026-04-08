@@ -1,33 +1,13 @@
 # Barmetal
 
-Devlog: Yaşasın Triple fault çözüldü yarı stabil modül yüklendi. Python tarafında analiz ve gizlilik eksikliği var. 1 hafta ara verdim sadece açık kapatma belki?
+Devlog: İmkansız ya İmkansız 7 farklı mimari düşündüm olmuyor tam trace gizli kalarak imkansız LBR bile yük ve karışık çıldırcam off ne yapsak ya takıldım burda kendime 4 gün mola verdim. İzahi hayli zor tanımsız bi vaziyet 
 
-Kapatılan açık sayısı:134
+Python tarafını sallamıyorum.
 
-Barmetal is a Ring-1 (Hypervisor) level Virtual Machine Introspection (VMI) research engine designed for AMD processors. It operates below the standard operating system layer by utilizing AMD SVM (Secure Virtual Machine) hardware extensions.
+Kapatılan açık sayısı:146
 
-## Current Architecture (V2.0 — Hardened)
+Barmetal is a Ring-1 (Hypervisor) level Virtual Machine Introspection (VMI) research engine designed for AMD processors. It operates below the standard operating system layer by utilizing AMD SVM hardware extensions.
 
-This project has evolved into a "Silicon Watchtower" class bare-metal hypervisor, defeating advanced Anti-Cheat timing attacks and escaping OS-level hooks.
-
-NOT: CLI Stealth Kamuflajı
-Tüm kullanıcıya görünür stringler masum NTP Saat Senkronizasyonu temasına büründürüldü:
-
-Eski (Şüpheli)	Yeni (Masum)
-SVM RING -1 MATRIX DASHBOARD -> NTP CLOCK DRIFT ANALYZER
-EXECUTION FLOW (RIP Trace) -> CLOCK DRIFT TRACE
-PAGE HEATMAP (Top Mutated) -> FREQUENCY ANALYSIS
-NPF DIRTY -> PAGES TIMER EVENTS (Decoded)
-[DIRTY!] -> [ANOMALY]
-Ring -1 Snapshot yakalandı -> Kalibrasyon tamamlandı
-Kernel hipervizörü ->Saat senkronizasyonu
-live_trace_report.txt -> ntp_sync_report.txt
-
-- **Phase 15 (Clean State):** `LD_PRELOAD` stealth ghosting. No `ptrace` anomalies.
-- **Phase 16 (Timing Armor):** Pure native execution via `EFER.SCE=1` passthrough, with zero `#VMEXIT` overhead.
-- **Phase 17 (LBR Illusion):** LBR Virtualization enabled; Branch tracing isolated per-ASID.
-- **Phase 18 (Surgical NPT):** Precision TLB manipulation via `INVLPGA`. Includes **Per-NPF TSC Compensation** and Drift Guards to flawlessly hide hypervisor presence and neutralize timing attacks.
-- **Phase 19 (Pure VMI):** Sandbox escape prevention moved from generic kernel Kprobes to direct silicon interception (`MSR_FS_BASE` / `MSR_GS_BASE` write trapping for thread birth and SWAPGS).
 
 ## Installation
 

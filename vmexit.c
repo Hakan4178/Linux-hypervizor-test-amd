@@ -15,7 +15,7 @@
 #define VMEXIT_MAX_ITERATIONS 100000
 
 /* ═══════════════════════════════════════════════════════════════════════════
- *  Kill Switch — Matrix'in "Altın Çıkışı"
+ *  Kill Switch — Matrix'in "Çıkışı"
  *
  *  Guest RAX + RBX magic pattern ile hypervisor'dan acil çıkış.
  *  Geliştirici güvenlik ağı: sonsuz döngü veya #PF ping-pong'da
@@ -94,16 +94,7 @@ static void handle_msr(struct svm_context *ctx, struct guest_regs *regs)
 		u64 wval = (regs->rdx << 32) | (vmcb->save.rax & 0xFFFFFFFFULL);
 
 		switch (msr_num) {
-		/*
-		 * [PHASE 19] Thread Doğumu Tespiti (Pure VMI)
-		 * OS yeni thread için TLS alanı ayarlarken WRMSR FS/GS_BASE
-		 * yazar. Bu yazma işlemi #VMEXIT üretir ve burada yakalanır.
-		 * Yazma işlemini native olarak gerçekleştiriyoruz (TLS bozulmasın)
-		 * ancak olayı telemetry ring buffer'a logluyoruz.
-		 *
-		 * NOT: SWAPGS de MSR_GS_BASE üzerinden geçer, bu sayede
-		 * user→kernel geçişleri de otomatik olarak yakalanır.
-		 */
+
 		case 0xC0000100: /* MSR_FS_BASE */
 		case 0xC0000101: /* MSR_GS_BASE */
 		case 0xC0000102: /* MSR_KERNEL_GS_BASE */
@@ -316,10 +307,6 @@ int svm_run_guest(struct svm_context *ctx, struct guest_regs *regs)
 	/* Phase 26: Pass VMCB Virtual Address as 3rd parameter for Assembly zero-stack decoding */
 	vmrun_with_regs(ctx->vmcb_pa, regs, ctx->vmcb);
 
-	/*
-	 * CRITICAL: Do NOT reload FS/GS selectors!
-	 * 'mov %%gs' zeroes GS_BASE. Write MSRs directly.
-	 */
 	asm volatile("lldt %0" ::"rm"(host_ldt_sel));
 
 	native_write_msr(MSR_FS_BASE, host_fs_base);
@@ -423,12 +410,6 @@ int svm_run_guest(struct svm_context *ctx, struct guest_regs *regs)
 		handle_rdtscp(ctx->vmcb, regs);
 		break;
 #endif
-
-		/*
-		 * Phase 27: DRx reads (0x20 - 0x27) are now natively handled in True Zero-Stack
-		 * Assembly via MACRO_HANDLE_DRX in vmexit_fastpath.S. They will never reach this C
-		 * handler.
-		 */
 
 	case SVM_EXIT_EXCP_BASE + 6: { /* #UD (Invalid Opcode) */
 		u8 opcode[2] = {0};
@@ -656,14 +637,9 @@ post_dispatch:
 			*offset = -10000000000LL;
 
 		ctx->vmcb->control.tsc_offset = *offset;
-		/*
-		 * Phase 26: Surgical VMCB Clean Bits
-		 * Start with ALL bits clean. Each handler above has already
-		 * cleared the specific bits it dirtied (NP, INTERCEPTS, etc).
-		 * We only need to additionally clear TSC since we just wrote tsc_offset.
-		 * This saves ~50 cycles per VMRUN on Zen 3/4 by preventing
-		 * redundant re-parsing of untouched VMCB sections.
-		 */
+
+		// Gerçekliğe uyan!
+
 		ctx->vmcb->control.clean |= VMCB_CLEAN_ALL;
 		ctx->vmcb->control.clean &= ~VMCB_CLEAN_TSC;
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Ring -1 Continuous Malware Tracer (V6.0)
+ * Ring -1
  *
  * Three interlocking engines:
  *
@@ -26,11 +26,11 @@
  */
 
 #include "svm_trace.h"
-#include <linux/mutex.h>
-#include <linux/uaccess.h>
 #include <linux/mm.h>
-#include <linux/vmalloc.h>
+#include <linux/mutex.h>
 #include <linux/percpu.h>
+#include <linux/uaccess.h>
+#include <linux/vmalloc.h>
 
 /* ── Module-level ring instance ────────────────────────────────────────── */
 extern atomic_t matrix_active;
@@ -173,8 +173,7 @@ EXPORT_SYMBOL_GPL(svm_trace_flush_batch);
  *
  * Modified in Phase 26 to utilize lockless batching, eliminating Cache Line Bouncing.
  */
-void svm_trace_emit_lbr(u64 cr3, u64 rip, u64 br_from, u64 br_to,
-			const u8 *insn_buf, u32 insn_len)
+void svm_trace_emit_lbr(u64 cr3, u64 rip, u64 br_from, u64 br_to, const u8 *insn_buf, u32 insn_len)
 {
 	struct svm_trace_entry hdr;
 	struct svm_lbr_pair lbr[AMD_LBR_STACK_DEPTH];
@@ -224,7 +223,8 @@ void svm_trace_emit_lbr(u64 cr3, u64 rip, u64 br_from, u64 br_to,
 	if (!lbuf)
 		return;
 
-	if (unlikely(lbuf->offset + total >= sizeof(lbuf->data)) || unlikely(lbuf->count >= BATCH_COUNT_LIMIT)) {
+	if (unlikely(lbuf->offset + total >= sizeof(lbuf->data)) ||
+	    unlikely(lbuf->count >= BATCH_COUNT_LIMIT)) {
 		svm_trace_flush_batch();
 	}
 
@@ -251,7 +251,8 @@ void svm_trace_emit_dirty(u64 cr3, u64 rip, u64 fault_gpa, const void *hva)
 	u64 offset, data_offset;
 	int copy_ret;
 
-	/* Phase 26: Always flush LBR batches first to maintain chronological order in ring buffer */
+	/* Phase 26: Always flush LBR batches first to maintain chronological order in ring buffer
+	 */
 	svm_trace_flush_batch();
 
 	/* Bulgu #1: NULL buffer koruması */
@@ -289,7 +290,7 @@ void svm_trace_emit_dirty(u64 cr3, u64 rip, u64 fault_gpa, const void *hva)
 
 /*
  * Phase 28C: Lockless Fast-Path Telemetry Emit
- * Instantly records a core hypervisor event code directly to the ring buffer 
+ * Instantly records a core hypervisor event code directly to the ring buffer
  * without causing any L1-I cache eviction or pipeline flushes (zero printk).
  */
 void svm_trace_emit_log(u32 event_id, u64 rip, u64 arg1, u64 arg2)
@@ -309,15 +310,16 @@ void svm_trace_emit_log(u32 event_id, u64 rip, u64 arg1, u64 arg2)
 	hdr.magic = SVM_TRACE_MAGIC;
 	hdr.tsc = rdtsc();
 	hdr.event_type = TRACE_EVT_LOG;
-	hdr.lbr_count = event_id;   /* Overload lbr_count for fast event_id dispatch */
+	hdr.lbr_count = event_id; /* Overload lbr_count for fast event_id dispatch */
 	hdr.guest_rip = rip;
-	hdr.fault_gpa = arg1;       /* Overload fault_gpa for arg1 */
-	hdr.guest_cr3 = arg2;       /* Overload cr3 for arg2 */
+	hdr.fault_gpa = arg1; /* Overload fault_gpa for arg1 */
+	hdr.guest_cr3 = arg2; /* Overload cr3 for arg2 */
 	hdr.data_size = 0;
 
 	total = sizeof(hdr);
 
-	if (unlikely(lbuf->offset + total >= sizeof(lbuf->data)) || unlikely(lbuf->count >= BATCH_COUNT_LIMIT)) {
+	if (unlikely(lbuf->offset + total >= sizeof(lbuf->data)) ||
+	    unlikely(lbuf->count >= BATCH_COUNT_LIMIT)) {
 		svm_trace_flush_batch();
 	}
 
@@ -375,7 +377,8 @@ retry:
 		 * consumer to drain the remaining evidence!
 		 */
 		if (atomic_read(&matrix_active) == 0 &&
-		    (u64)atomic64_read(&svm_tring.commit_idx) == (u64)atomic64_read(&svm_tring.read_idx)) {
+		    (u64)atomic64_read(&svm_tring.commit_idx) ==
+			(u64)atomic64_read(&svm_tring.read_idx)) {
 			ret = 0; /* Clean EOF */
 			goto out;
 		}
@@ -413,19 +416,13 @@ out:
 	return ret;
 }
 
-static void trace_mmap_open(struct vm_area_struct *vma)
-{
-	atomic_inc(&mmap_count);
-}
+static void trace_mmap_open(struct vm_area_struct *vma) { atomic_inc(&mmap_count); }
 
-static void trace_mmap_close(struct vm_area_struct *vma)
-{
-	atomic_dec(&mmap_count);
-}
+static void trace_mmap_close(struct vm_area_struct *vma) { atomic_dec(&mmap_count); }
 
 static const struct vm_operations_struct trace_vm_ops = {
-	.open  = trace_mmap_open,
-	.close = trace_mmap_close,
+    .open = trace_mmap_open,
+    .close = trace_mmap_close,
 };
 
 static int trace_mmap(struct file *file, struct vm_area_struct *vma)
@@ -455,8 +452,8 @@ static int trace_mmap(struct file *file, struct vm_area_struct *vma)
 }
 
 static const struct proc_ops pops_trace = {
-	.proc_read = trace_read,
-	.proc_mmap = trace_mmap,
+    .proc_read = trace_read,
+    .proc_mmap = trace_mmap,
 };
 
 /* ── Lifecycle ──────────────────────────────────────────────────────────── */
@@ -472,14 +469,17 @@ int svm_trace_init(void)
 	ltrace_bufs = kcalloc(num_possible_cpus(), sizeof(void *), GFP_KERNEL);
 	if (!ltrace_bufs)
 		return -ENOMEM;
-		
-	for_each_possible_cpu(cpu) {
+
+	for_each_possible_cpu(cpu)
+	{
 		ltrace_bufs[cpu] = kzalloc(sizeof(struct local_trace_buf), GFP_KERNEL);
 		if (!ltrace_bufs[cpu]) {
 			pr_err("[NTP_TRC] Failed to allocate local trace buffer for CPU %d\n", cpu);
 			/* Partial free loop */
-			for_each_possible_cpu(cpu) {
-				if (ltrace_bufs[cpu]) kfree(ltrace_bufs[cpu]);
+			for_each_possible_cpu(cpu)
+			{
+				if (ltrace_bufs[cpu])
+					kfree(ltrace_bufs[cpu]);
 			}
 			kfree(ltrace_bufs);
 			ltrace_bufs = NULL;
@@ -513,7 +513,8 @@ int svm_trace_init(void)
 	}
 
 	pr_info("[NTP_TRC] 64 MB ring buffer ready; /proc/svm_trace open (LBRV %s)\n",
-		boot_cpu_has(X86_FEATURE_LBRV) ? "Supported" : "NOT Supported (Using Resilience Fallback)");
+		boot_cpu_has(X86_FEATURE_LBRV) ? "Supported"
+					       : "NOT Supported (Using Resilience Fallback)");
 	return 0;
 }
 
@@ -539,7 +540,8 @@ void svm_trace_cleanup(void)
 			atomic64_read(&svm_tring.drop_count));
 
 		if (refs > 0) {
-			pr_crit("[NTP_TRC] REFUSING vfree: %d active mmap refs! Leaking buffer to prevent UAF.\n",
+			pr_crit("[NTP_TRC] REFUSING vfree: %d active mmap refs! Leaking buffer to "
+				"prevent UAF.\n",
 				refs);
 			svm_tring.buffer = NULL;
 			return;
@@ -551,7 +553,8 @@ void svm_trace_cleanup(void)
 
 	/* Cleanup dynamic arrays */
 	if (ltrace_bufs) {
-		for_each_possible_cpu(cpu) {
+		for_each_possible_cpu(cpu)
+		{
 			if (ltrace_bufs[cpu])
 				kfree(ltrace_bufs[cpu]);
 		}

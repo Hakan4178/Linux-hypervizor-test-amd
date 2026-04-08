@@ -1,9 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/*
- * Module Init/Exit + VMCB Prepare (V6.7 Stealth)
- *
- *
- */
 
 #include "ring_minus_one.h"
 #include "svm_trace.h"
@@ -57,33 +52,15 @@ u64 g_target_cr3;
 #define MSRPM_BASE_C001 0x1000 /* 0xC001_0000 – 0xC001_1FFF */
 
 /* Kısayol: rdmsr intercept (bit 0) */
-#define MSRPM_SET_RD(pm, base, msr)                                                                \
-	((pm)[MSRPM_BYTE_OFF(base, msr)] |= (1 << MSRPM_BIT_POS(msr)))
+#define MSRPM_SET_RD(pm, base, msr) ((pm)[MSRPM_BYTE_OFF(base, msr)] |= (1 << MSRPM_BIT_POS(msr)))
 
 /* Kısayol: rdmsr + wrmsr intercept (bit 0 + bit 1) */
-#define MSRPM_SET_RW(pm, base, msr)                                                                \
-	((pm)[MSRPM_BYTE_OFF(base, msr)] |= (3 << MSRPM_BIT_POS(msr)))
+#define MSRPM_SET_RW(pm, base, msr) ((pm)[MSRPM_BYTE_OFF(base, msr)] |= (3 << MSRPM_BIT_POS(msr)))
 
 /* Kısayol: sadece wrmsr intercept (bit 1) — Phase 19: Thread doğumu */
 #define MSRPM_SET_WR(pm, base, msr)                                                                \
 	((pm)[MSRPM_BYTE_OFF(base, msr)] |= (1 << (MSRPM_BIT_POS(msr) + 1)))
 
-/* ═══════════════════════════════════════════════════════════════════════════
- *  VMCB Prepare — V4.0 Stealth Intercepts
- * ═══════════════════════════════════════════════════════════════════════════
- */
-
-/*
- * vmcb_prepare_npt - VMCB'yi NPT tabanlı çalışma için yapılandır
- * @vmcb: yapılandırılacak VMCB (çağıran tahsis eder)
- * @g_rip: başlangıç guest instruction pointer
- * @g_rsp: başlangıç guest stack pointer
- * @g_cr3: guest CR3 (0 = mevcut host CR3 kullan)
- * @npt: NPT context (NULL = NPT devre dışı)
- *
- * V4.0 Stealth: CPUID intercept, per-CPU TSC, ASID-only TLB,
- * full timer I/O coverage, expanded MSR intercepts.
- */
 int vmcb_prepare_npt(struct svm_context *ctx, u64 g_rip, u64 g_rsp, u64 g_cr3)
 {
 	struct vmcb *vmcb = ctx->vmcb;
@@ -133,31 +110,16 @@ int vmcb_prepare_npt(struct svm_context *ctx, u64 g_rip, u64 g_rsp, u64 g_cr3)
 	vmcb->control.intercepts[INTERCEPT_RDTSCP >> 5] |= (1U << (INTERCEPT_RDTSCP & 31));
 #endif
 
-	/* ── Exception Intercepts ──
-	 * Phase 28C: #UD intercept REMOVED — SCE=1, SYSCALL is native now.
-	 * Genuine #UD exceptions handled by guest kernel IDT.
-	 * #DB (1): Intercepted for Phase 28C Stealth DRx Breakpoints.
-	 * #PF (14): Guest-level #PF intercepted as safety net alongside NPF.
-	 */
-	vmcb->control.intercepts[INTERCEPT_EXCEPTION_OFFSET >> 5] |= (1U << 1);  /* #DB */
+	vmcb->control.intercepts[INTERCEPT_EXCEPTION_OFFSET >> 5] |= (1U << 1);	 /* #DB */
 	vmcb->control.intercepts[INTERCEPT_EXCEPTION_OFFSET >> 5] |= (1U << 14); /* #PF */
 
-	/* 
+	/*
 	 * Phase 25: DRx Shadowing (Stealth Hardware Breakpoints)
 	 * Intercept READS to DR0-DR7 (Bits 0-7 of INTERCEPT_DR word)
-	 * We do NOT intercept WRITES, allowing the cheat to natively 
+	 * We do NOT intercept WRITES, allowing the cheat to natively
 	 * place hardware breakpoints!
 	 */
 	vmcb->control.intercepts[INTERCEPT_DR] |= 0xFF;
-
-	/*
-	 * Phase 22: Shadow Debug Control (MSR 0x1D9) LBR Stealth.
-	 */
-	/* ── Hardware Interrupt Intercepts (Host Watchdog / Soft-Lockup Protection)
-	 * ── V_INTR_MASKING aktifken Host'a gelen fiziksel donanım kesmeleri (Timer,
-	 * NMI) doğrudan #VMEXIT (SVM_EXIT_INTR) üretir. Böylece Host sistemi felç
-	 * olmaz!
-	 */
 	vmcb->control.intercepts[INTERCEPT_INTR >> 5] |= (1U << (INTERCEPT_INTR & 31));
 	vmcb->control.intercepts[INTERCEPT_NMI >> 5] |= (1U << (INTERCEPT_NMI & 31));
 	vmcb->control.intercepts[INTERCEPT_SMI >> 5] |= (1U << (INTERCEPT_SMI & 31));
@@ -192,7 +154,8 @@ int vmcb_prepare_npt(struct svm_context *ctx, u64 g_rip, u64 g_rsp, u64 g_cr3)
 		 */
 		MSRPM_SET_WR(msrpm, MSRPM_BASE_C000, 0x100); /* MSR_FS_BASE (0xC0000100): wr */
 		MSRPM_SET_WR(msrpm, MSRPM_BASE_C000, 0x101); /* MSR_GS_BASE (0xC0000101): wr */
-		MSRPM_SET_WR(msrpm, MSRPM_BASE_C000, 0x102); /* MSR_KERNEL_GS_BASE (0xC0000102): wr */
+		MSRPM_SET_WR(msrpm, MSRPM_BASE_C000,
+			     0x102); /* MSR_KERNEL_GS_BASE (0xC0000102): wr */
 
 		/* ── Bölge 2: MSR 0xC001xxxx ── */
 		MSRPM_SET_RD(msrpm, MSRPM_BASE_C001,
@@ -226,13 +189,6 @@ int vmcb_prepare_npt(struct svm_context *ctx, u64 g_rip, u64 g_rsp, u64 g_cr3)
 
 	vmcb->control.virt_ext |= LBR_CTL_ENABLE_MASK; // LBR Virtualization (save/restore)
 
-	/*
-	 * Phase 17 V2 (Shadow LBR Illusion): 
-	 * Anti-Cheats (VMP/EAC) reading MSR_DEBUGCTL (0x1D9) will detect anomaly 
-	 * if LBR bit is 1. We now use a Shadow DEBUGCTL.
-	 * Hardware LBR is FORCED ON for tracing, but Guest reads/writes 
-	 * are intercepted and it sees the LBR disabled shadow value.
-	 */
 	rdmsrl(0x1D9, msr_val);
 	vmcb->save.dbgctl = msr_val | 1ULL; /* Force LBR ON in hardware */
 	if (ctx) {
@@ -267,26 +223,13 @@ int vmcb_prepare_npt(struct svm_context *ctx, u64 g_rip, u64 g_rsp, u64 g_cr3)
 	vmcb->save.cstar = msr_val;
 	rdmsrl(MSR_SYSCALL_MASK, msr_val);
 	vmcb->save.sfmask = msr_val;
-	
-	/* 
-	 * CRITICAL FIX: GS Base Swap Issue
-	 * We are currently in ioctl (kernel space), so:
-	 *   MSR_GS_BASE = Kernel Per-CPU pointer
-	 *   MSR_KERNEL_GS_BASE = Userspace TLS pointer
-	 *
-	 * But we are dropping the guest directly into CPL=3. In CPL=3, GS_BASE 
-	 * must hold the userspace TLS. When the guest later executes SYSCALL, 
-	 * 'swapgs' will swap GS_BASE and KERNEL_GS_BASE, putting the Per-CPU 
-	 * pointer (which it needs) into GS_BASE.
-	 *
-	 * Thus, we MUST swap them here while saving into the VMCB.
-	 */
+
 	{
 		u64 host_gs, host_kgs;
 		rdmsrl(MSR_GS_BASE, host_gs);
 		rdmsrl(MSR_KERNEL_GS_BASE, host_kgs);
-		vmcb->save.gs.base = host_kgs;        /* Userspace TLS for CPL=3 */
-		vmcb->save.kernel_gs_base = host_gs;  /* Kernel Per-CPU for swapgs */
+		vmcb->save.gs.base = host_kgs;	     /* Userspace TLS for CPL=3 */
+		vmcb->save.kernel_gs_base = host_gs; /* Kernel Per-CPU for swapgs */
 	}
 
 	rdmsrl(MSR_FS_BASE, msr_val);
@@ -297,14 +240,7 @@ int vmcb_prepare_npt(struct svm_context *ctx, u64 g_rip, u64 g_rsp, u64 g_cr3)
 	 */
 	rdmsrl(MSR_EFER, msr_val);
 	vmcb->save.efer = msr_val | EFER_SVME;
-	/* Phase 28C: SCE=1 — SYSCALL runs natively inside guest.
-	 * Exit detection via kprobe(do_group_exit), fork via kprobe(kernel_clone).
-	 * Eliminates ~50K VMEXIT/sec from syscall trapping.
-	 */
 
-	/* TR (Task Register) - Triple Fault Fix (Security Fix #3)
-	 * 64-bit TSS descriptor = 16 byte (desc[0..3]), Intel/AMD SDM Vol.3 §7.2.3
-	 */
 	{
 		u16 tr_sel;
 		struct desc_ptr dt;
@@ -441,7 +377,8 @@ static void free_percpu_vmcbs(void)
 {
 	int cpu;
 
-	for_each_possible_cpu(cpu) {
+	for_each_possible_cpu(cpu)
+	{
 		struct percpu_vmcb *pv = per_cpu_ptr(&cpu_vmcbs, cpu);
 
 		if (pv->vmcb) {
@@ -473,7 +410,8 @@ static int __init svm_module_init(void)
 	/* 0) KVM (Hypervisor) Varlık Testi */
 	cpuid(1, &eax, &ebx, &ecx, &edx);
 	if (ecx & (1 << 31)) {
-		pr_err("KRITIK HATA: KVM / Sanal Makine Tespit Edildi (CPUID.1:ECX.31 = 1). Modül sadece Bare-Metal'de çalıştırılabilir. Yükleme iptal edildi!\n");
+		pr_err("KRITIK HATA: KVM / Sanal Makine Tespit Edildi (CPUID.1:ECX.31 = 1). Modül "
+		       "sadece Bare-Metal'de çalıştırılabilir. Yükleme iptal edildi!\n");
 		return -EBUSY;
 	}
 
@@ -502,7 +440,8 @@ static int __init svm_module_init(void)
 	{
 		int cpu;
 
-		for_each_online_cpu(cpu) {
+		for_each_online_cpu(cpu)
+		{
 			struct percpu_vmcb *pv = per_cpu_ptr(&cpu_vmcbs, cpu);
 
 			pv->vmcb = (struct vmcb *)__get_free_page(GFP_KERNEL | __GFP_ZERO);
@@ -582,7 +521,8 @@ static int __init svm_module_init(void)
 
 	ret = init_syscall_spoofing();
 	if (ret) {
-		pr_warn("[RING-1] Kprobe Spoofing failed to init. Running without Phase 16 Fallback.\n");
+		pr_warn("[RING-1] Kprobe Spoofing failed to init. Running without Phase 16 "
+			"Fallback.\n");
 	}
 
 	ret = npt_hook_init();
@@ -590,7 +530,8 @@ static int __init svm_module_init(void)
 		pr_warn("[RING-1] NPT Hook Engine failed to init. Running without Phase 18.\n");
 	}
 
-	pr_info(">>> BAŞARILI! Modül arka planda sessizce /dev/ntp_sync üzerinden hedef bekliyor <<<\n");
+	pr_info(">>> BAŞARILI! Modül arka planda sessizce /dev/ntp_sync üzerinden hedef bekliyor "
+		"<<<\n");
 	return 0;
 
 err_iopm:
